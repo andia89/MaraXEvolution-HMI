@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   height="40"
+   viewBox="0 -960 1600 1600"
+   width="40"
+   fill="#e3e3e3"
+   version="1.1"
+   id="svg1"
+   sodipodi:docname="scaleunpressed.svg"
+   inkscape:version="1.4.2 (f4327f4, 2025-05-13)"
+   inkscape:export-filename="scaleunpressed.png"
+   inkscape:export-xdpi="96"
+   inkscape:export-ydpi="96"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs1" />
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     showgrid="true"
+     inkscape:zoom="5.9514821"
+     inkscape:cx="-9.8294844"
+     inkscape:cy="20.33107"
+     inkscape:window-width="1920"
+     inkscape:window-height="1010"
+     inkscape:window-x="-6"
+     inkscape:window-y="-6"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg1">
+    <inkscape:grid
+       id="grid1"
+       units="px"
+       originx="0"
+       originy="0"
+       spacingx="40"
+       spacingy="40"
+       empcolor="#0099e5"
+       empopacity="0.30196078"
+       color="#0099e5"
+       opacity="0.14901961"
+       empspacing="5"
+       enabled="true"
+       visible="true" />
+  </sodipodi:namedview>
+  <path
+     d="M 400,240 Q 400,129 429.5,50.5 459,-28 505,-80 551,-132 608,-160.5 665,-189 720,-200 V -320 Q 583,-337 491.5,-404.5 400,-472 400,-560 h 800 q 0,88 -91.5,155.5 Q 1017,-337 880,-320 v 120 q 55,11 112,39.5 57,28.5 103,80.5 46,52 75.5,130.5 Q 1200,129 1200,240 H 960 v -80 h 155 Q 1097,8 1001.5,-60 906,-128 800,-128 694,-128 598.5,-60 503,8 485,160 h 155 v 80 z m 400,-635 q 91,0 162,-24.5 71,-24.5 113,-60.5 H 525 q 42,36 113,60.5 71,24.5 162,24.5 z m 0,635 Q 767,240 743.5,216.5 720,193 720,160 720,143 726.5,129 733,115 744,104 768,80 825,53.5 882,27 960,0 q -28,78 -54,135 -26,57 -50,81 -11,11 -25,17.5 -14,6.5 -31,6.5 z m 0,-635 z"
+     id="path1"
+     style="fill:#ffffff;fill-opacity:1" />
+</svg>
