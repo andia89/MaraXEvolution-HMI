@@ -1,29 +1,35 @@
-## Disclaimer & Safety Warning
+# MaraX Evolution - HMI
 
-**PLEASE READ CAREFULLY BEFORE PROCEEDING.**
+This repository contains the Nextion display files and firmware for the **MaraX Evolution** Human-Machine Interface. It provides a visual interface for monitoring temperature, pressure, and shot timers.
 
-**1. I am a Hobbyist, Not a Professional**
-I am **not** a professional mechanical, electrical, or software engineer. This project was created purely as a personal hobby undertaking for educational purposes. The code and hardware designs provided here are **not** certified, tested to industrial standards, or guaranteed to be bug-free.
+## Repository Structure
 
-**2. Warranty Voiding**
-Modifying your espresso machine, uploading custom firmware, or opening the chassis **will almost certainly void your manufacturer’s warranty**. By proceeding with any instructions or files from this repository, you accept full responsibility for the loss of any existing warranty or support from the original manufacturer.
+* `HMI/`: Nextion Editor source file (`.hmi`), compiled file (`.tft`), and Python scripts for asset generation.
+* `firmware/`: PlatformIO project for the HMI controller (ESP32/ESP8266 based).
 
-**3. No Liability**
-This software and hardware documentation is provided **"AS IS", WITHOUT WARRANTY OF ANY KIND**, express or implied.
-* **I am not responsible** for any damage to your machine (bricking the device, burning out components, leaks, etc.).
-* **I am not responsible** for any personal injury or property damage (including fire or electrical shock) resulting from the use of this project.
-* **You assume all risk** associated with modifying your hardware and running this software.
+## Assembly & Installation
 
-**4. High Voltage & Pressure Warning**
-Espresso machines involve **Mains Electricity (110V/220V)**, **Water**, and **High Pressure**. This is a dangerous combination.
-* Never work on the machine while it is plugged in.
-* Ensure you have a proper understanding of electrical safety before attempting any hardware modifications.
-* Improper handling of the boiler or pressure lines can result in explosion or severe burns.
+### Display Setup
+1.  Copy the `HMI/nextion.tft` file to the root of a FAT32-formatted microSD card.
+2.  Insert the card into the Nextion display while powered off.
+3.  Power on the display to flash the interface. Remove the card once complete.
 
-**Use this project entirely at your own risk.**
+### Controller Assembly
+1.  Flash the firmware located in `firmware/` to your HMI microcontroller (see below).
+2.  Connect the microcontroller to the Nextion display via UART (TX/RX).
+3.  Connect the HMI unit to the main MaraX Evolution controller.
 
-If you find anything that you think could be improved (be it software/electrical or mechanical side) please let me know, and feel free to open a Pull request
+## Firmware Compilation
 
+1.  Install [VSCode](https://code.visualstudio.com/) with the [PlatformIO extension](https://platformio.org/).
+2.  Open the `firmware` directory in PlatformIO.
+3.  Build and upload the code to your HMI microcontroller.
+
+> **Note:** The Python scripts in `HMI/` (`createPNG.py`, etc.) are used to generate graphical assets for the display. You only need these if you plan to modify the UI graphics.
+
+## Support
+
+This is a supporting repository. For all inquiries, issues, or support requests, please visit the **[Main MaraX Evolution Repository](https://github.com/andia89/maraxevolution)**.
 
 ## Licensing
 This project is dual-licensed to protect the work while allowing for personal study and modification.
