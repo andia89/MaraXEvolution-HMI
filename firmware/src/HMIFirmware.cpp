@@ -260,6 +260,7 @@ NextionComponent t_machineState(nextion, 0, 14);
 int waveformID = 12;
 NextionComponent wf_pressure(nextion, 0, waveformID);
 NextionComponent btn_tare(nextion, 0, 16);
+NextionComponent va_highlight(nextion, 0, 45);
 
 // --- Page 1 (Main Settings) ---
 NextionComponent t_hxTemp2(nextion, 1, 9);
@@ -498,7 +499,7 @@ void setup()
     ArduinoOTA.setPassword(OTA_PASSWORD);
     ArduinoOTA.begin();
   }
-
+  va_highlight.value(HIGHLIGHT_COLOR);
   btn_steamBoost.release(steamBoostButtonRelease);
   slider_brewTemp.release(brewTempSliderRelease);
   btn_brewModeCoffee.release(brewModeButtonRelease);
