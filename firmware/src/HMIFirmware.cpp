@@ -54,6 +54,7 @@ bool profilingTargetReceived = false;
 bool profilingModeReceived = false;
 bool currentProfileReceived = false;
 bool tempsetReceived = false;
+bool setupFinished = false;
 
 // --- Temporary Buffers for Web Forms ---
 char form_mqtt_server[40] = ""; // Default values for the form
@@ -447,11 +448,11 @@ void setup()
 
   Serial1.begin(9600, SERIAL_8N1, SERIAL_RX, SERIAL_TX);
   nextion.begin(Serial1, 9600);
-  nextion.command("baud=19200");
-  delay(1500);
+  nextion.command("baud=115200");
+  delay(2500);
 
-  Serial1.begin(19200, SERIAL_8N1, SERIAL_RX, SERIAL_TX);
-  nextion.begin(Serial1, 19200);
+  Serial1.begin(115200, SERIAL_8N1, SERIAL_RX, SERIAL_TX);
+  nextion.begin(Serial1, 115200);
 
   if (!OFFLINE_MODE)
   {
@@ -529,6 +530,9 @@ void setup()
   cacheSliderData();
   cacheEntriesData();
   cleanCurrentPage();
+  delay(2500);
+  nextion.command("vis splash,0");
+  setupFinished = true;
 }
 
 void loop()
@@ -657,6 +661,13 @@ void loop()
   {
     currentPage = newCurrentPage;
     cleanCurrentPage();
+    lastHxTemp_sent = -1.0f;
+    lastBoilerTemp_sent = -1.0f;
+    lastPressure_sent = -1.0f;
+    lastTempSetpoint_sent = -1.0f;
+    lastWeight_sent = -1.0f;
+    lastShotTime_sent = -1;
+    strcpy(lastMachineState_sent, "");
   }
   if (newCurrentPage != 3 && portalRunning)
   {
@@ -700,8 +711,6 @@ void loop()
   {
     currentPage = newCurrentPage;
   }
-  delay(50);
-  nextion.command("vis splash,0");
 }
 
 // --- Network & MQTT Functions ---
@@ -1322,18 +1331,13 @@ void handleIncomingMessage(char *message)
       nextion.command(cmdBuffer);
       nextion.command(cmdBuffer);
       delay(100);
-      int screenVal = x_referenceWeight.value();
-      if (screenVal != -1)
-      {
-        referenceWeight = (float)screenVal / 10.0f;
-        Serial.printf("Default reference weight loaded: %.1fg\n", referenceWeight);
-      }
-      else
+      if (referenceWeight <= 0.1f)
       {
         referenceWeight = 100.0f;
-        x_referenceWeight.value(1000);
-        Serial.println("Warning: Could not read weight from screen, using 100.0g");
       }
+      x_referenceWeight.value((int)(referenceWeight * 10.0f));
+
+      Serial.printf("Entered Calibration Step 2. Reference Weight: %.1fg\n", referenceWeight);
     }
     else if (calibrationStep != 0)
     {
@@ -1547,6 +1551,14 @@ void checkEncoderPublish()
 void updateDisplay()
 {
   char buffer[10];
+  static bool hasForcedUpdate = false;
+  bool forceUpdate = false;
+
+  if (setupFinished && !hasForcedUpdate)
+  {
+    forceUpdate = true;
+    hasForcedUpdate = true;
+  }
 
   if (shotTime != lastShotTime_sent)
   {
@@ -1566,49 +1578,50 @@ void updateDisplay()
   }
   const int num_entries = 38;
 
-  if (abs(hxTemp - lastHxTemp_sent) > 0.1)
+  if ((abs(hxTemp - lastHxTemp_sent) > 0.1) || forceUpdate)
   {
     dtostrf(hxTemp, 4, 1, buffer);
-    t_hxTemp.text(buffer);
-    t_hxTemp2.text(buffer);
-    t_hxTemp3.text(buffer);
-    t_hxTemp4.text(buffer);
-    lastHxTemp_sent = hxTemp;
-    int hxPic = round(map(hxTemp, 20, 100, 0, num_entries - 1));
+    int hxPic = (int)round(mapf(hxTemp, 20, 100, 0, num_entries - 1));
     hxPic = constrain(hxPic, 0, num_entries - 1);
+    t_hxTemp.text(buffer);
     pic_brew.attribute("pic", (int)hxPic);
+    t_hxTemp2.text(buffer);
     pic_brew2.attribute("pic", (int)hxPic);
+    t_hxTemp3.text(buffer);
     pic_brew3.attribute("pic", (int)hxPic);
+    t_hxTemp4.text(buffer);
     pic_brew4.attribute("pic", (int)hxPic);
+    lastHxTemp_sent = hxTemp;
   }
-
-  if (abs(boilerTemp - lastBoilerTemp_sent) > 0.1)
+  delay(30);
+  if ((abs(boilerTemp - lastBoilerTemp_sent) > 0.1) || forceUpdate)
   {
     dtostrf(boilerTemp, 4, 1, buffer);
-    t_boilerTemp.text(buffer);
-    t_boilerTemp2.text(buffer);
-    t_boilerTemp3.text(buffer);
-    t_boilerTemp4.text(buffer);
-    lastBoilerTemp_sent = boilerTemp;
-    int blPic = round(map(boilerTemp, 20, 140, num_entries, 2 * num_entries - 1));
+    int blPic = (int)round(mapf(boilerTemp, 20, 140, num_entries, 2 * num_entries - 1));
     blPic = constrain(blPic, num_entries, 2 * num_entries - 1);
+    t_boilerTemp.text(buffer);
     pic_boiler.attribute("pic", (int)blPic);
+    t_boilerTemp2.text(buffer);
     pic_boiler2.attribute("pic", (int)blPic);
+    t_boilerTemp3.text(buffer);
     pic_boiler3.attribute("pic", (int)blPic);
+    t_boilerTemp4.text(buffer);
     pic_boiler4.attribute("pic", (int)blPic);
+    lastBoilerTemp_sent = boilerTemp;
   }
-  if (abs(brewTempSetPoint - lastTempSetpoint_sent) > 0.1)
+  delay(30);
+  if ((abs(brewTempSetPoint - lastTempSetpoint_sent) > 0.1) || forceUpdate)
   {
     lastTempSetpoint_sent = brewTempSetPoint;
-    int arrPic = round(map(brewTempSetPoint / 10, 20 - (100 - 20) / (num_entries - 2), 100 + (100 - 20) / (num_entries - 2), 2 * num_entries, 3 * num_entries));
+    int arrPic = (int)round(mapf(brewTempSetPoint / 10, 20 - (100 - 20) / (num_entries - 2), 100 + (100 - 20) / (num_entries - 2), 2 * num_entries, 3 * num_entries));
     arrPic = constrain(arrPic, 2 * num_entries, 3 * num_entries - 1);
     pic_arrow.attribute("pic", (int)arrPic);
     pic_arrow2.attribute("pic", (int)arrPic);
     pic_arrow3.attribute("pic", (int)arrPic);
     pic_arrow4.attribute("pic", (int)arrPic);
   }
-
-  if (abs(weight - lastWeight_sent) > 0.01)
+  delay(30);
+  if ((abs(weight - lastWeight_sent) > 0.01) || forceUpdate)
   {
     sprintf(buffer, "%.1fg", weight);
     t_weight.text(buffer);
