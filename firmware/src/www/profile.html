@@ -1,0 +1,552 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta content="width=device-width, initial-scale=1, maximum-scale=1" name="viewport">
+    <title>MaraX Evolution Profile Editor</title>
+    <style>
+        :root {
+            --bg: #1a1a1a;
+            --fg: #e0e0e0;
+            --accent: #d4a017;
+            --danger: #c62828;
+            --card: #2d2d2d;
+            --input-bg: #444;
+            --border: #555;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--fg);
+            margin: 0;
+            padding: 10px;
+            font-size: 16px;
+        }
+
+        h1,
+        h2,
+        h3 {
+            color: var(--accent);
+            margin-top: 0;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .card {
+            background: var(--card);
+            padding: 15px;
+            border-radius: 12px;
+            margin-bottom: 15px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, .2);
+        }
+
+        .btn {
+            min-width: 80px;
+            padding: 10px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 700;
+            font-size: 0.9rem;
+            transition: opacity .2s, transform .1s;
+            color: #fff;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 40px;
+        }
+
+        #editName {
+            font-size: 1rem;
+            padding: 5px;
+            box-sizing: border-box;
+            width: 100%;
+            height: 40px;
+        }
+
+        .btn:active {
+            transform: scale(0.98);
+        }
+
+        .btn:hover {
+            opacity: .9;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: #000;
+        }
+
+        .btn-danger {
+            background: var(--danger);
+        }
+
+        .btn-secondary {
+            background: #555;
+        }
+
+        input[type=number],
+        input[type=text],
+        select {
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            color: var(--fg);
+            padding: 10px;
+            border-radius: 6px;
+            width: 100%;
+            box-sizing: border-box;
+            font-size: 16px;
+            appearance: none;
+        }
+
+        input:focus {
+            outline: 2px solid var(--accent);
+            border-color: transparent;
+        }
+
+        .header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .row {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-bottom: 15px;
+        }
+
+        .col {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            font-size: 0.9em;
+            color: #aaa;
+        }
+
+        .active-badge {
+            background: var(--accent);
+            color: #000;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            font-weight: bold;
+            margin-left: 8px;
+            text-transform: uppercase;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+        }
+
+        th {
+            text-align: left;
+            padding: 12px 8px;
+            border-bottom: 2px solid #444;
+            color: #aaa;
+        }
+
+        td {
+            padding: 12px 8px;
+            border-bottom: 1px solid #444;
+            vertical-align: middle;
+        }
+
+        .editor-header {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            align-items: center;
+        }
+
+        @media screen and (max-width: 700px) {
+
+            #profileList table,
+            #profileList thead,
+            #profileList tbody,
+            #profileList th,
+            #profileList td,
+            #profileList tr {
+                display: block;
+            }
+
+            .editor-header {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 15px;
+            }
+
+            .editor-header>div,
+            .mode-select-container {
+                width: 100%;
+                flex-basis: auto;
+            }
+
+            .btn {
+                min-height: 36px;
+            }
+
+            #editName,
+            #editMode {
+                width: 100%;
+            }
+
+            #profileList thead tr {
+                position: absolute;
+                top: -9999px;
+                left: -9999px;
+            }
+
+            #profileList tr {
+                margin-bottom: 15px;
+                background: #363636;
+                border-radius: 8px;
+                padding: 10px;
+                border: 1px solid #444;
+            }
+
+            #profileList td {
+                border: none;
+                padding: 5px 0;
+                position: relative;
+            }
+
+            #profileList td:last-child {
+                display: flex;
+                gap: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+                border-top: 1px solid #444;
+            }
+
+            #profileList .btn {
+                flex: 1;
+            }
+
+            #stepsTable thead {
+                display: none;
+            }
+
+            #stepsTable tr {
+                display: grid;
+                grid-template-columns: 1fr 1fr 50px;
+                gap: 10px;
+                background: #363636;
+                padding: 10px;
+                margin-bottom: 10px;
+                border-radius: 8px;
+                align-items: end;
+            }
+
+            #stepsTable tr.step-row {
+                display: grid;
+                grid-template-columns: 25px 1fr 1fr 40px;
+                gap: 5px;
+                align-items: center;
+                padding: 5px 0;
+            }
+
+            #stepsTable td {
+                padding: 0 !important;
+                border: none !important;
+                display: block;
+            }
+
+            #stepsTable input {
+                padding: 6px 2px;
+                font-size: 14px;
+                height: 36px;
+            }
+
+            #stepsTable .btn-danger {
+                width: 100%;
+                min-width: unset;
+                padding: 0;
+                height: 36px;
+            }
+
+            #stepsTable td {
+                display: block;
+                border: none;
+                padding: 0;
+            }
+
+            #stepsTable td:nth-child(2):before {
+                content: "Target";
+                display: block;
+                font-size: 0.8em;
+                color: #aaa;
+                margin-bottom: 2px;
+            }
+
+            #stepsTable td:nth-child(3):before {
+                content: "Control";
+                display: block;
+                font-size: 0.8em;
+                color: #aaa;
+                margin-bottom: 2px;
+            }
+
+            #stepsTable td:first-child {
+                grid-column: 1 / -1;
+                font-weight: bold;
+                color: var(--accent);
+                margin-bottom: 5px;
+            }
+
+            #stepsTable td:first-child:before {
+                content: "Step ";
+            }
+        }
+
+        #status {
+            text-align: center;
+            font-weight: bold;
+            margin-bottom: 20px;
+            color: #000;
+            padding: 10px;
+            border-radius: 6px;
+        }
+
+        .editor-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .editor-actions .btn {
+            flex: 1;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>☕ MaraX Profile Manager</h1>
+        <div class="hidden" id="status"></div>
+        <div id="listView">
+            <div class="card">
+                <div class="header-row">
+                    <h2>Available Profiles</h2>
+                    <button class="btn btn-secondary" onclick="fetchProfiles()">↻ Refresh</button>
+                </div>
+                <div id="profileList">Loading...</div>
+            </div>
+        </div>
+        <div class="hidden" id="editorView">
+            <div class="card">
+                <h2 id="editorTitle">Edit Profile</h2>
+                <div class="row">
+                    <div class="col">
+                        <label>Profile Name</label>
+                        <input id="editName" maxlength="64" placeholder="e.g. Turbo Bloom">
+                    </div>
+                    <div class="col">
+                        <label>Mode</label>
+                        <select id="editMode">
+                            <option value="0">Ramped</option>
+                            <option value="1">Stepped</option>
+                        </select>
+                    </div>
+                </div>
+                <h3>Profile Steps</h3>
+                <table id="stepsTable">
+                    <thead>
+                        <tr>
+                            <th style="width: 50px">#</th>
+                            <th>Target (bar / g/s)</th>
+                            <th>Control (s / g)</th>
+                            <th style="width: 60px"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="stepsBody"></tbody>
+                </table>
+                <button class="btn btn-secondary" style="width: 100%; margin-top: 10px; border-style: dashed;"
+                    onclick="addStepRow()">+ Add Step</button>
+                <div class="editor-actions">
+                    <button class="btn btn-secondary" onclick="showList()">Cancel</button>
+                    <button class="btn btn-primary" onclick="saveCurrentProfile()">Save Profile</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        let profiles = [];
+        let currentEditIndex = -1;
+        async function fetchProfiles() {
+            try {
+                const res = await fetch('/api/profiles?_=' + Date.now());
+                if (!res.ok) throw new Error("Failed to fetch");
+                const data = await res.json();
+                profiles = data.profiles;
+                renderList(data.active);
+                if (currentEditIndex !== -1 && !document.getElementById('editorView').classList.contains('hidden')) {
+                    editProfile(currentEditIndex);
+                }
+            } catch (e) {
+                showStatus('Error fetching profiles: ' + e.message, true);
+            }
+        }
+        function renderList(activeIndex) {
+            const listEl = document.getElementById('profileList');
+            listEl.innerHTML = '';
+            if (profiles.length === 0) {
+                listEl.innerHTML = '<div style="text-align:center; padding:20px; color:#666">No profiles found</div>';
+                return;
+            }
+            const table = document.createElement('table');
+            table.innerHTML = '<thead><tr><th>Slot</th><th>Name</th><th>Steps</th><th>Actions</th></tr></thead><tbody></tbody>';
+            const tbody = table.querySelector('tbody');
+            profiles.forEach((p, idx) => {
+                const isEmpty = (p.s.length === 0);
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>Slot ${idx} ${idx === activeIndex ? '<span class="active-badge">ACTIVE</span>' : ''}</td>
+                    <td><strong style="${isEmpty ? 'color:#777; font-style:italic' : ''}">${isEmpty ? 'Empty Slot' : p.n}</strong></td>
+                    <td>${isEmpty ? '-' : p.s.length + ' steps'}</td>
+                    <td>
+                        <div style="display:flex; gap:5px;">
+                            <button class="btn btn-primary" onclick="editProfile(${idx})">
+                                ${isEmpty ? 'Create' : 'Edit'}
+                            </button>
+                            <button class="btn btn-secondary" onclick="setActive(${idx})" 
+                                ${(idx === activeIndex || isEmpty) ? 'disabled' : ''}>Load</button>
+                            <button class="btn btn-danger" onclick="deleteProfile(${idx})"
+                                ${isEmpty ? 'disabled' : ''}>Clear</button>
+                        </div>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+            listEl.appendChild(table);
+        }
+        function editProfile(index) {
+            currentEditIndex = index;
+            const p = profiles[index];
+            document.getElementById('editorTitle').innerText = `Editing Slot ${index}`;
+            document.getElementById('editName').value = p.n;
+            document.getElementById('editMode').value = p.m;
+            renderSteps(p.s);
+            document.getElementById('listView').classList.add('hidden');
+            document.getElementById('editorView').classList.remove('hidden');
+        }
+        function renderSteps(steps) {
+            const tbody = document.getElementById('stepsBody');
+            tbody.innerHTML = '';
+            steps.forEach((step) => {
+                let t = Array.isArray(step) ? step[0] : step.t;
+                let c = Array.isArray(step) ? step[1] : step.c;
+                addStepRow(t, c);
+            });
+        }
+        function addStepRow(target = 9.0, control = 10.0) {
+            const tbody = document.getElementById('stepsBody');
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td><span class="step-idx"></span></td>
+                <td><input type="number" step="0.1" class="step-target" value="${target}"></td>
+                <td><input type="number" step="0.1" class="step-control" value="${control}"></td>
+                <td><button class="btn btn-danger" style="padding: 5px 10px;" onclick="this.closest('tr').remove(); updateStepIndices();">✕</button></td>
+            `;
+            tbody.appendChild(tr);
+            updateStepIndices();
+        }
+        function updateStepIndices() {
+            document.querySelectorAll('#stepsBody tr').forEach((tr, i) => {
+                tr.querySelector('.step-idx').innerText = i + 1;
+            });
+        }
+        function showList() {
+            currentEditIndex = -1;
+            document.getElementById('editorView').classList.add('hidden');
+            document.getElementById('listView').classList.remove('hidden');
+            fetchProfiles();
+        }
+        async function saveCurrentProfile() {
+            const steps = [];
+            document.querySelectorAll('#stepsBody tr').forEach(tr => {
+                steps.push([
+                    parseFloat(tr.querySelector('.step-target').value) || 0,
+                    parseFloat(tr.querySelector('.step-control').value) || 0
+                ]);
+            });
+            const payload = {
+                id: currentEditIndex,
+                n: document.getElementById('editName').value,
+                m: parseInt(document.getElementById('editMode').value),
+                s: steps
+            };
+            try {
+                const res = await fetch('/api/profile', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (res.ok) {
+                    showStatus('Profile saved successfully!', false);
+                    showList();
+                } else {
+                    showStatus('Save failed', true);
+                }
+            } catch (e) {
+                showStatus('Error saving: ' + e.message, true);
+            }
+        }
+        async function setActive(index) {
+            try {
+                await fetch(`/api/setactive?index=${index}`, { method: 'POST' });
+                fetchProfiles();
+                showStatus(`Profile ${index} loaded.`, false);
+            } catch (e) {
+                showStatus('Error: ' + e.message, true);
+            }
+        }
+        async function deleteProfile(index) {
+            if (!confirm(`Are you sure you want to clear slot ${index}?`)) return;
+            try {
+                await fetch(`/api/delete?index=${index}`, { method: 'POST' });
+                fetchProfiles();
+                showStatus(`Profile ${index} cleared.`, false);
+            } catch (e) {
+                showStatus('Error: ' + e.message, true);
+            }
+        }
+        function showStatus(msg, isError) {
+            const el = document.getElementById('status');
+            el.innerText = msg;
+            el.style.background = isError ? 'var(--danger)' : 'var(--accent)';
+            el.style.color = isError ? '#fff' : '#000';
+            el.classList.remove('hidden');
+            setTimeout(() => el.classList.add('hidden'), 3000);
+        }
+        fetchProfiles();
+    </script>
+</body>
+
+</html>
