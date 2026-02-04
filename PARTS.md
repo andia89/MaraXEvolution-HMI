@@ -19,11 +19,12 @@ This document lists all the components required to build the MaraX Evolution Hum
 | :--- | :--- | :---: | :--- |
 | **3D Printed Parts** | Custom Enclosure | 1 Set | STL files are located in `HMI/3DParts/`. I printed mine in PLA and was quite happy with it|
 | **Threaded Inserts** | [M3 Threaded Inserts](https://www.ruthex.de/en/products/ruthex-gewindeeinsatz-m3-100-stuck-rx-m3x5-7-messing-gewindebuchsen) | 10 | Standard heat-set inserts (e.g., Ruthex M3x5.7). Any should do|
-| **Teflon Plunger** | [M3 Teflon Plunger](https://de.aliexpress.com/item/1005009562484175.html) | 31 | **Critical:** Get the longest version available. Used to provide smooth rotation feel. |
+| **Teflon Plunger** | [M3 Teflon Plunger](https://de.aliexpress.com/item/1005009562484175.html) | 3 | **Critical:** Get the longest version available. Used to provide smooth rotation feel. |
 | **Friction Tape** | [Teflon Tape (10mm)](https://de.aliexpress.com/item/1005005280321356.html) | 1 Roll | Applied between moving 3D printed parts to remove friction. |
 | **Fasteners** | M3 Machine Screws | Assorted | A selection of lengths (6mm - 12mm) for assembling the case. |
 
 ---
 
 *Note: Links provided are for reference and may change over time.*
+
 
