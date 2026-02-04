@@ -7,7 +7,7 @@ This document lists all the components required to build the MaraX Evolution Hum
 | Component | Description | Quantity | Notes |
 | :--- | :--- | :---: | :--- |
 | **Microcontroller** | Arduino Nano ESP32 | 1 | Must include headers. Installs into the bottom section of the housing. |
-| **Display** | Nextion [NX4848E028-011C](https://nextion.tech/) | 1 | 2.8" Intelligent Series HMI Touchscreen. |
+| **Display** | Nextion [NX4848E028-011C](https://nextion.tech/) | 1 | 2.8" Edge Series HMI Touchscreen. |
 | **Rotary Encoder** | Bourns PEC16-4125F-N0012 | 1 | Used for manual pressure control and menu navigation. |
 | **Tactile Switch** | 506-FSM5JH | 1 | External push button for the encoder assembly (if not integrated). |
 | **Cabling** | Dupont Cables (F-F / M-F) | Set | For connecting the Arduino to the Display and Encoder. |
@@ -26,5 +26,6 @@ This document lists all the components required to build the MaraX Evolution Hum
 ---
 
 *Note: Links provided are for reference and may change over time.*
+
 
 
