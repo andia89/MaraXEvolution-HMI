@@ -1,6 +1,6 @@
 # MaraX Evolution - HMI
 
-[<img src="https://github.com/user-attachments/assets/6cd800d1-d086-4739-b1a8-fa24eb85fd67" width="450" alt="">](https://github.com/user-attachments/assets/6cd800d1-d086-4739-b1a8-fa24eb85fd67)
+[<img src="https://github.com/user-attachments/assets/6cd800d1-d086-4739-b1a8-fa24eb85fd67" height="450" alt="">](https://github.com/user-attachments/assets/6cd800d1-d086-4739-b1a8-fa24eb85fd67)
 
 This repository contains the hardware designs, 3D printed parts, and firmware for the **MaraX Evolution Human-Machine Interface (HMI)**.
 
