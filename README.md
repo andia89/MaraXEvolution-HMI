@@ -1,5 +1,7 @@
 # MaraX Evolution - HMI
 
+[<img src="https://github.com/user-attachments/assets/6cd800d1-d086-4739-b1a8-fa24eb85fd67" width="450" alt="">](https://github.com/user-attachments/assets/6cd800d1-d086-4739-b1a8-fa24eb85fd67)
+
 This repository contains the hardware designs, 3D printed parts, and firmware for the **MaraX Evolution Human-Machine Interface (HMI)**.
 
 Designed to replace the standard LEDs and switches of the Lelit Mara X, this unit provides a rich touchscreen interface, real-time extraction charting, and a physical rotary encoder for tactile control. It communicates wirelessly with the [Main Controller](https://github.com/andia89/maraxevolution) via ESP-NOW, ensuring a low-latency, wire-free installation.
