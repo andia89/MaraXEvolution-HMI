@@ -343,6 +343,23 @@
         .editor-actions .btn {
             flex: 1;
         }
+
+        .chart-container {
+            background: #222;
+            border: 1px solid #444;
+            border-radius: 8px;
+            margin: 20px 0;
+            padding: 10px;
+            height: 200px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
     </style>
 </head>
 
@@ -369,11 +386,15 @@
                     </div>
                     <div class="col">
                         <label>Mode</label>
-                        <select id="editMode">
+                        <select id="editMode" onchange="drawPreview()">
                             <option value="0">Ramped</option>
                             <option value="1">Stepped</option>
                         </select>
                     </div>
+                </div>
+                <h3>Profile Visualization</h3>
+                <div class="chart-container">
+                    <canvas id="profileChart"></canvas>
                 </div>
                 <h3>Profile Steps</h3>
                 <table id="stepsTable">
@@ -381,7 +402,7 @@
                         <tr>
                             <th style="width: 50px">#</th>
                             <th>Target (bar / g/s)</th>
-                            <th>Control (s / g)</th>
+                            <th>Control (g / s)</th>
                             <th style="width: 60px"></th>
                         </tr>
                     </thead>
@@ -455,6 +476,7 @@
             renderSteps(p.s);
             document.getElementById('listView').classList.add('hidden');
             document.getElementById('editorView').classList.remove('hidden');
+            setTimeout(drawPreview, 50);
         }
         function renderSteps(steps) {
             const tbody = document.getElementById('stepsBody');
@@ -469,13 +491,169 @@
             const tbody = document.getElementById('stepsBody');
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td><span class="step-idx"></span></td>
-                <td><input type="number" step="0.1" class="step-target" value="${target}"></td>
-                <td><input type="number" step="0.1" class="step-control" value="${control}"></td>
-                <td><button class="btn btn-danger" style="padding: 5px 10px;" onclick="this.closest('tr').remove(); updateStepIndices();">✕</button></td>
-            `;
+        <td><span class="step-idx"></span></td>
+        <td><input type="number" step="0.1" class="step-target" value="${target}" oninput="drawPreview()"></td>
+        <td><input type="number" step="0.1" class="step-control" value="${control}" oninput="drawPreview()"></td>
+        <td><button class="btn btn-danger" style="padding: 5px 10px;" onclick="this.closest('tr').remove(); updateStepIndices(); drawPreview();">✕</button></td>
+    `;
+
             tbody.appendChild(tr);
             updateStepIndices();
+            drawPreview();
+        }
+        function drawPreview() {
+            const canvas = document.getElementById('profileChart');
+            if (!canvas) return;
+
+            const container = canvas.parentElement;
+            if (!container) return;
+
+            const rect = container.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return;
+
+            const ctx = canvas.getContext('2d');
+            const dpr = window.devicePixelRatio || 1;
+
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+            canvas.style.width = rect.width + 'px';
+            canvas.style.height = rect.height + 'px';
+
+            ctx.scale(dpr, dpr);
+
+            const w = rect.width;
+            const h = rect.height;
+
+            const padTop = 10;
+            const padBot = 60;
+            const padLeft = 45;
+            const padRight = 40;
+
+            ctx.clearRect(0, 0, w, h);
+
+            const steps = [];
+            const modeEl = document.getElementById('editMode');
+            const mode = modeEl ? parseInt(modeEl.value) : 0;
+
+            const rows = document.querySelectorAll('#stepsBody tr');
+            rows.forEach(tr => {
+                const tVal = parseFloat(tr.querySelector('.step-target').value) || 0;
+                const cVal = parseFloat(tr.querySelector('.step-control').value) || 0;
+                steps.push({ target: tVal, control: cVal });
+            });
+
+            if (steps.length === 0) return;
+
+            let totalControl = 0;
+            let maxDataValue = 0;
+
+            steps.forEach(s => {
+                totalControl += s.control;
+                if (s.target > maxDataValue) maxDataValue = s.target;
+            });
+
+            if (totalControl < 1) totalControl = 10;
+            if (maxDataValue < 1) maxDataValue = 9;
+
+            const scaleMax = maxDataValue * 1.1;
+            const chartW = w - padLeft - padRight;
+            const chartH = h - padTop - padBot;
+
+            const getX = (val) => padLeft + (val / totalControl) * chartW;
+            const getY = (val) => (h - padBot) - (val / scaleMax) * chartH;
+
+            ctx.strokeStyle = '#444';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(getX(0), getY(0));
+            ctx.lineTo(getX(0), getY(scaleMax));
+            ctx.moveTo(getX(0), getY(0));
+            ctx.lineTo(getX(totalControl), getY(0));
+            ctx.stroke();
+
+            ctx.strokeStyle = '#d4a017';
+            ctx.lineWidth = 2.5;
+            ctx.lineJoin = 'round';
+            ctx.beginPath();
+
+            let currentX = 0;
+            let currentY = (steps.length > 0 && steps[0].control <= 0.001) ? steps[0].target : 0;
+
+            ctx.moveTo(getX(currentX), getY(currentY));
+
+            steps.forEach(step => {
+                if (step.control <= 0.001) {
+                    currentY = step.target;
+                    ctx.lineTo(getX(currentX), getY(currentY));
+                } else {
+                    const nextX = currentX + step.control;
+                    const nextY = step.target;
+
+                    if (mode === 1) {
+                        ctx.lineTo(getX(currentX), getY(nextY));
+                        ctx.lineTo(getX(nextX), getY(nextY));
+                        currentY = nextY;
+                    } else {
+                        ctx.lineTo(getX(nextX), getY(nextY));
+                        currentY = nextY;
+                    }
+                    currentX = nextX;
+                }
+            });
+            ctx.stroke();
+
+            ctx.fillStyle = '#aaa';
+            ctx.font = '11px sans-serif';
+            ctx.textAlign = 'center';
+
+            ctx.textBaseline = 'top';
+            ctx.fillText("s / g", padLeft + chartW / 2, h - 35);
+
+            ctx.save();
+            ctx.translate(15, padTop + chartH / 2);
+            ctx.rotate(-Math.PI / 2);
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText("bar / g/s", 0, 0);
+            ctx.restore();
+
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'middle';
+
+            const uniqueTargets = [...new Set(steps.map(s => s.target))].filter(t => t > 0.1).sort((a, b) => a - b);
+
+            uniqueTargets.forEach(val => {
+                const yPos = getY(val);
+                ctx.beginPath();
+                ctx.strokeStyle = '#666';
+                ctx.lineWidth = 1;
+                ctx.moveTo(getX(0), yPos);
+                ctx.lineTo(getX(0) - 5, yPos);
+                ctx.stroke();
+                ctx.fillText(val.toFixed(1), getX(0) - 8, yPos);
+            });
+
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+            ctx.fillText("0", getX(0), h - padBot + 8);
+
+            let labelX = 0;
+            steps.forEach(step => {
+                if (step.control > 0.001) {
+                    labelX += step.control;
+
+                    ctx.beginPath();
+                    ctx.strokeStyle = '#666';
+                    ctx.lineWidth = 1;
+                    ctx.moveTo(getX(labelX), h - padBot);
+                    ctx.lineTo(getX(labelX), h - padBot - 5);
+                    ctx.stroke();
+
+                    if (getX(labelX) - getX(0) > 20) {
+                        ctx.fillText(labelX.toFixed(1), getX(labelX), h - padBot + 8);
+                    }
+                }
+            });
         }
         function updateStepIndices() {
             document.querySelectorAll('#stepsBody tr').forEach((tr, i) => {

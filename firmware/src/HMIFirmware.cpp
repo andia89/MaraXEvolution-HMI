@@ -19,7 +19,7 @@
 // =================================================================
 // --- CONFIGURATION & DEFINES ---
 // =================================================================
-const bool SIMULATION_MODE = false;
+bool SIMULATION_MODE = false;
 const bool OFFLINE_MODE = false;
 const float TEMP_SETPOINT_SCALE = 10.0f;
 const int SHOT_RETENTION_TIME_MS = 10000;
@@ -555,7 +555,24 @@ void loop()
 
     if (len > 0)
     {
-      if (strncmp(cmdBuffer, "import_profile=", 15) == 0)
+      if (strcmp(cmdBuffer, "sim_on") == 0)
+      {
+        SIMULATION_MODE = true;
+        pumpIsOn = true;                // "Turn on" the virtual pump
+        brewLeverLifted = true;         // "Lift" the virtual lever
+        shotStartTimeMillis = millis(); // Initialize the timer
+
+        Serial.println(">>> Simulation Mode ENABLED & Shot STARTED");
+      }
+      else if (strcmp(cmdBuffer, "sim_off") == 0)
+      {
+        SIMULATION_MODE = false;
+        pressure = 0;
+        weight = 0;
+        pumpIsOn = false;
+        Serial.println(">>> Simulation Mode DISABLED");
+      }
+      else if (strncmp(cmdBuffer, "import_profile=", 15) == 0)
       {
         Serial.println("Serial command received: importing profile...");
         importProfileJson(cmdBuffer + 15);
@@ -677,7 +694,7 @@ void loop()
   {
     stopConfigurationPortal();
   }
-  if (!OFFLINE_MODE && !isPaired)
+  if (!OFFLINE_MODE && !isPaired && !SIMULATION_MODE)
   {
     if (millis() - lastPairingRequestTime > PAIRING_REQUEST_INTERVAL_MS)
     {
@@ -3031,67 +3048,155 @@ void profilingEntryFieldReleased(uint8_t id)
 }
 
 // --- Machine Logic & Simulation ---
-
 void simulateShot()
 {
   static bool simulationActive = false;
   static unsigned long simulationStartTime = 0;
-  const int simulationDuration = 30; // seconds
-  const int preinfusionTime = 4;     // seconds
-  const float targetYield = 56.0;    // grams
+  static bool pumpCutoffReached = false;
+
+  // --- TIMING CONFIGURATION ---
+  const float pumpDurationS = 34.5;
+  const float flowStartS = 4.0;  // First drips
+  const float rampStartS = 14.0; // Start of the high-flow "Mountain"
+
+  // --- TARGETS ---
+  const float targetYield = 40.0;
+  const float finalDripYield = 44.5;
+
+  // Pressure Profile Targets
+  const float maxPressure = 9.0; // Peak pressure during the "Shelf"
+  const float endPressure = 7.5; // Target pressure at 34.5s (User request: 7-8 bar)
+
+  // Flow Configuration
+  const float shelfFlowRate = 0.6;
+
+  // --- DYNAMIC FLOW CALCULATION (Same as before) ---
+  const float durationShelf = rampStartS - flowStartS;
+  const float durationRamp = pumpDurationS - rampStartS;
+  const float weightAccumulatedOnShelf = durationShelf * shelfFlowRate;
+  const float weightNeededInRamp = targetYield - weightAccumulatedOnShelf;
+  const float peakFlowRate = (2.0f * weightNeededInRamp / durationRamp) - shelfFlowRate;
 
   unsigned long currentTime = millis();
 
-  if (!simulationActive && shotTime == 0)
+  // Start Logic
+  if (!simulationActive && (pumpIsOn || shotTime > 0))
   {
     simulationActive = true;
     simulationStartTime = currentTime;
-    pumpIsOn = true;
-    brewLeverLifted = true;
+    pumpCutoffReached = false;
     weight = 0.0f;
     flowRate = 0.0f;
+    pressure = 0.0f;
+
+    strlcpy(machineState, "BREWING", sizeof(machineState));
+    strlcpy(profilingMode, "profile", sizeof(profilingMode));
   }
 
-  brewTempSetPoint = 0;
-  strlcpy(machineState, "BREWING", sizeof(machineState));
   if (simulationActive)
   {
-    unsigned long elapsedMillis = currentTime - simulationStartTime;
-    int elapsedSeconds = elapsedMillis / 1000;
-    hxTemp = 112;
-    boilerTemp = 154.5;
-    if (elapsedSeconds < preinfusionTime)
+    float t = (currentTime - simulationStartTime) / 1000.0f;
+
+    // ============================================================
+    // 1. PRESSURE (Physics-Based Decay)
+    // ============================================================
+    if (t <= pumpDurationS)
     {
-      pressure = map(elapsedSeconds, 0, preinfusionTime, 0.0, 9.0);
-      weight = 0.0f;
+      pumpIsOn = true;
+      float baseP = 0.0f;
+
+      if (t < 2.0)
+      {
+        // Phase 0: Chaotic fill
+        baseP = t + (random(-20, 20) / 100.0f);
+      }
+      else if (t < 5.0)
+      {
+        // Phase 1: Ramp to Max
+        baseP = mapf(t, 2.0, 5.0, 2.0, maxPressure);
+      }
+      else if (t < rampStartS)
+      {
+        // Phase 2: The "Shelf" -> High resistance, maintain Max Pressure
+        baseP = maxPressure;
+      }
+      else
+      {
+        // Phase 3: The "Mountain" -> Resistance drops, Pressure decays
+        // Linearly interpolate from 9.0 down to 7.5 over the ramp duration
+        baseP = mapf(t, rampStartS, pumpDurationS, maxPressure, endPressure);
+      }
+
+      // Add vibratory pump noise
+      pressure = baseP + (random(-15, 15) / 100.0f);
+      pressure = max(0.0f, pressure);
     }
     else
     {
-      pressure = 9.0 + (random(-30, 31) / 100.0);
-
-      float extractionDurationSeconds = simulationDuration - preinfusionTime;
-      float avgFlowRate = targetYield / extractionDurationSeconds;
-
-      unsigned long extractionMillis = elapsedMillis - (preinfusionTime * 1000);
-      float extractionTimeSeconds = (float)extractionMillis / 1000.0f;
-
-      if (extractionDurationSeconds > 0)
+      // Pump Cutoff
+      if (!pumpCutoffReached)
       {
-        weight = extractionTimeSeconds * avgFlowRate + (random(-10, 11) / 100.0);
-        weight = max(0.0f, weight);
+        pumpIsOn = false;
+        pumpCutoffReached = true;
       }
-      flowRate = avgFlowRate + (random(-20, 21) / 100.0);
-      flowRate = max(0.0f, flowRate);
+      pressure = max(0.0f, pressure * 0.85f); // Solenoid release
     }
 
-    if (elapsedSeconds >= simulationDuration)
+    // ============================================================
+    // 2. FLOW PROFILE ("Mara X" Shape)
+    // ============================================================
+    float intendedFlow = 0.0f;
+
+    if (t < flowStartS)
     {
-      pumpIsOn = false;
-      brewLeverLifted = false;
-      pressure = 0.0;
-      flowRate = 0.0;
-      simulationActive = false;
+      intendedFlow = 0.0f;
     }
+    else if (t < rampStartS)
+    {
+      // The "Shelf"
+      intendedFlow = shelfFlowRate + (random(-5, 6) / 100.0f);
+    }
+    else if (t <= pumpDurationS)
+    {
+      // The "Mountain"
+      float progress = (t - rampStartS) / durationRamp;
+      float currentRampFlow = shelfFlowRate + (progress * (peakFlowRate - shelfFlowRate));
+
+      // Stair-step effect
+      int steps = (int)(currentRampFlow * 10);
+      intendedFlow = (float)steps / 10.0f;
+      intendedFlow += (random(-5, 6) / 200.0f);
+    }
+    else
+    {
+      // Post-Pump Decay
+      float dripTime = t - pumpDurationS;
+      if (dripTime < 3.0)
+      {
+        intendedFlow = peakFlowRate * (1.0 - (dripTime / 3.0));
+      }
+      else
+      {
+        intendedFlow = 0.0f;
+        simulationActive = false;
+      }
+    }
+
+    flowRate = max(0.0f, intendedFlow);
+
+    // ============================================================
+    // 3. WEIGHT INTEGRATION
+    // ============================================================
+    static unsigned long lastLoopTime = 0;
+    float dt = (currentTime - lastLoopTime) / 1000.0f;
+    if (dt > 0.1 || dt < 0)
+      dt = 0.05;
+    lastLoopTime = currentTime;
+
+    weight += flowRate * dt;
+
+    if (t > pumpDurationS && weight > finalDripYield)
+      weight = finalDripYield;
   }
 }
 
