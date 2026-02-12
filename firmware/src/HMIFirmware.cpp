@@ -2404,10 +2404,9 @@ bool isSlotFree(int index)
 
 void importProfileJson(const char *json)
 {
-  Serial.println("Attempting to import profile...");
+  Serial.println("Attempting to update current profile via import...");
 
   EspressoProfile tempProfile;
-
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, json);
 
@@ -2437,57 +2436,20 @@ void importProfileJson(const char *json)
     tempProfile.numSteps++;
   }
 
-  int targetIndex = -1;
-  int firstFreeIndex = -1;
+  int targetIndex = currentProfileIndex;
 
-  for (int i = 0; i < MAX_PROFILES; i++)
-  {
-    if (strcmp(profiles[i].name, tempProfile.name) == 0)
-    {
-      targetIndex = i;
-      Serial.printf("Found existing profile '%s' at index %d. Updating.\n", tempProfile.name, i);
-      break;
-    }
-
-    if (firstFreeIndex == -1 && isSlotFree(i))
-    {
-      firstFreeIndex = i;
-    }
-  }
-
-  if (targetIndex == -1)
-  {
-    if (firstFreeIndex != -1)
-    {
-      targetIndex = firstFreeIndex;
-      Serial.printf("Name '%s' not found. Inserting into free slot %d.\n", tempProfile.name, targetIndex);
-    }
-    else
-    {
-      Serial.println("Import failed: Profile list is full and no existing name matched.");
-      if (currentPage == 3)
-      {
-        t_systemMessage.text("Import Failed:\r\nProfile Memory Full");
-        systemMessageClearTime = millis() + 5000;
-      }
-      return;
-    }
-  }
+  Serial.printf("Overwriting profile at index %d with new data (Name: %s)\n", targetIndex, tempProfile.name);
 
   profiles[targetIndex] = tempProfile;
   saveProfile(targetIndex);
 
-  if (targetIndex == currentProfileIndex)
-  {
-    currentProfile = &profiles[targetIndex];
-    updateFullProfileUI();
-    Serial.println("Active profile updated via import.");
-  }
+  currentProfile = &profiles[targetIndex];
+  updateFullProfileUI();
 
   if (currentPage == 3)
   {
     char msg[50];
-    sprintf(msg, "Import Successful:\r\n%s", tempProfile.name);
+    sprintf(msg, "Profile Updated:\r\n%s", tempProfile.name);
     t_systemMessage.text(msg);
     systemMessageClearTime = millis() + 5000;
   }
