@@ -5,7 +5,6 @@
 #include <ESP32RotaryEncoder.h>
 #include "NextionX2.h"
 #include <ArduinoOTA.h>
-#include <Preferences.h>
 #include <ArduinoJson.h>
 #include <esp_now.h>
 #include <WebServer.h>
@@ -89,7 +88,7 @@ const char *mqtt_topic_mqtt_port = "mqtt_port";
 const char *mqtt_topic_mqtt_user = "mqtt_user";
 const char *mqtt_topic_mqtt_pass = "mqtt_pass";
 const char *mqtt_topic_import_profile = "profile_data";
-
+const char *mqtt_topic_active_profile_id = "active_profile_id";
 // =================================================================
 // --- SYSTEM & LIBRARY OBJECTS ---
 // =================================================================
@@ -109,6 +108,7 @@ uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 uint8_t mainControllerMac[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 int myChannel = 0;
 esp_now_peer_info_t peerInfo;
+volatile bool espNowBusy = false;
 
 // Define a structure for ESP-NOW messages
 typedef struct struct_message
@@ -228,10 +228,9 @@ struct EspressoProfile
 };
 
 EspressoProfile *currentProfile = nullptr;
-#define MAX_PROFILES 32
+#define MAX_PROFILES 16
 EspressoProfile profiles[MAX_PROFILES];
 int currentProfileIndex = 0;
-Preferences preferences;
 
 bool currentProfileDirty = false;
 unsigned long profileIndexSettleTime = 0;
@@ -379,9 +378,8 @@ void updateChart();
 void parseProfilingData();
 void updateProfilingDisplay();
 void updateFullProfileUI();
-void saveProfile(int index);
-void loadProfiles();
 void saveCurrentProfileIndex();
+void saveProfile(int index);
 void importProfileJson(const char *json);
 void deleteProfile(int index);
 bool isSlotFree(int index);
@@ -457,7 +455,7 @@ void setup()
 
   Serial1.begin(115200, SERIAL_8N1, SERIAL_RX, SERIAL_TX);
   nextion.begin(Serial1, 115200);
-
+  currentProfile = &profiles[0];
   if (!OFFLINE_MODE)
   {
     setup_wifi();
@@ -529,7 +527,6 @@ void setup()
   delay(100);
   nextion.update();
   currentPage = nextion.getCurrentPageID();
-  loadProfiles();
   updateFullProfileUI();
   cacheSliderData();
   cacheEntriesData();
@@ -1044,10 +1041,7 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
 
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status)
 {
-  if (status != ESP_NOW_SEND_SUCCESS)
-  {
-    Serial.println("ESP-NOW message failed to send.");
-  }
+  espNowBusy = false;
 }
 
 void resetPairing()
@@ -1173,22 +1167,35 @@ void sendEspNowBuffer()
   if (!isPaired)
     return;
 
+  if (espNowBusy)
+  {
+    delay(50);
+    unsigned long waitStart = millis();
+    while (espNowBusy)
+    {
+      if (millis() - waitStart > 50)
+      {
+        espNowBusy = false; // Safety timeout
+        break;
+      }
+      yield();
+    }
+  }
+
   struct_message espnow_message;
 
   strncpy(espnow_message.payload, espNowMessageBuffer, sizeof(espnow_message.payload));
   espnow_message.payload[sizeof(espnow_message.payload) - 1] = '\0';
-
+  espNowBusy = true;
   esp_err_t result = esp_now_send(mainControllerMac, (uint8_t *)&espnow_message, sizeof(espnow_message));
 
-  if (result == ESP_OK)
+  if (result != ESP_OK)
   {
-    espNowMessageBuffer[0] = '\0';
+    espNowBusy = false;
+    Serial.print("ERROR: ESP-NOW send failed: ");
+    Serial.println(result);
   }
-  else
-  {
-    Serial.println("ERROR: ESP-NOW send failed");
-    espNowMessageBuffer[0] = '\0';
-  }
+  espNowMessageBuffer[0] = '\0';
 }
 
 void publishData(const char *topic, const char *payload, bool espNowSendNow)
@@ -1257,10 +1264,27 @@ void handleIncomingMessage(char *message)
   {
     pumpIsOn = parseBool(value);
   }
+  else if (strcmp(key, mqtt_topic_active_profile_id) == 0)
+  {
+    int newIndex = atoi(value);
+    if (newIndex >= 0 && newIndex < MAX_PROFILES)
+    {
+      currentProfileIndex = newIndex;
+      currentProfile = &profiles[currentProfileIndex];
+      updateFullProfileUI();
+    }
+  }
   else if (strcmp(key, mqtt_topic_import_profile) == 0)
   {
     currentProfileReceived = true;
     importProfileJson(value);
+  }
+  else if (strcmp(key, "profile_sync") == 0)
+  {
+    if (strcmp(value, "complete") == 0)
+    {
+      currentProfileReceived = true;
+    }
   }
   else if (strcmp(key, mqtt_topic_brew_mode) == 0)
   {
@@ -1536,23 +1560,6 @@ void publishSetting()
   case SETTING_ID_PROFILING_VALUE:
   {
     saveProfile(currentProfileIndex);
-    char jsonBuffer[2048];
-    JsonDocument doc;
-    doc["n"] = currentProfile->name;
-    doc["m"] = currentProfile->isStepped ? 1 : 0;
-    JsonArray steps = doc["s"].to<JsonArray>();
-    for (int i = 0; i < currentProfile->numSteps; i++)
-    {
-      JsonArray step = steps.add<JsonArray>();
-      step.add(currentProfile->steps[i].target);
-      step.add(currentProfile->steps[i].control);
-    }
-
-    serializeJson(doc, jsonBuffer, sizeof(jsonBuffer));
-    Serial.print("Publishing Profile: ");
-    Serial.println(jsonBuffer);
-
-    publishData("profile_data", jsonBuffer, true);
     break;
   }
   }
@@ -2255,137 +2262,46 @@ void parseProfilingData()
                 currentProfile->numSteps);
 }
 
-void loadProfiles()
-{
-  Serial.println("--- LOADING PROFILES FROM NVS ---");
-
-  preferences.begin("profiles", true);
-  currentProfileIndex = preferences.getInt("curIdx", 0);
-  preferences.end();
-
-  preferences.begin("profs_data", true);
-  int firstValidIndex = -1;
-
-  for (int i = 0; i < MAX_PROFILES; i++)
-  {
-    char key[10];
-    sprintf(key, "p_%d", i);
-    size_t len = preferences.getBytesLength(key);
-
-    if (len == sizeof(EspressoProfile))
-    {
-      preferences.getBytes(key, &profiles[i], sizeof(EspressoProfile));
-      if (profiles[i].numSteps > 0)
-      {
-        if (firstValidIndex == -1)
-          firstValidIndex = i;
-        Serial.printf("[Slot %d] FOUND: '%s' (%d steps)\n", i, profiles[i].name, profiles[i].numSteps);
-      }
-      else
-      {
-        profiles[i].numSteps = 0;
-      }
-    }
-    else
-    {
-      profiles[i].numSteps = 0;
-    }
-  }
-  preferences.end();
-
-  if (firstValidIndex == -1)
-  {
-    Serial.println("NOTE: Memory completely empty. Creating 'Standard Profile' in Slot 0.");
-    profiles[0].numSteps = 1;
-    profiles[0].steps[0] = {9.0, 30.0};
-    strcpy(profiles[0].name, "Standard Profile");
-    profiles[0].isStepped = false;
-    firstValidIndex = 0;
-  }
-
-  if (currentProfileIndex < 0 || currentProfileIndex >= MAX_PROFILES || profiles[currentProfileIndex].numSteps == 0)
-  {
-    Serial.printf("Warning: Index %d is empty or invalid. Switching to first valid slot: %d\n", currentProfileIndex, firstValidIndex);
-    currentProfileIndex = firstValidIndex;
-    saveCurrentProfileIndex();
-  }
-
-  currentProfile = &profiles[currentProfileIndex];
-  Serial.printf("--- LOAD COMPLETE. Active: '%s' (Slot %d) ---\n", currentProfile->name, currentProfileIndex);
-}
-
 void deleteProfile(int index)
 {
-  if (index < 0 || index >= MAX_PROFILES)
-  {
-    Serial.printf("Error: Profile index %d out of range (0-%d)\n", index, MAX_PROFILES - 1);
-    return;
-  }
-
-  if (profiles[index].numSteps == 0 && strlen(profiles[index].name) == 0)
-  {
-    return;
-  }
-
-  Serial.printf("Deleting profile %d ('%s')...\n", index, profiles[index].name);
-
   profiles[index].name[0] = '\0';
-  profiles[index].isStepped = false;
   profiles[index].numSteps = 0;
-  memset(profiles[index].steps, 0, sizeof(profiles[index].steps));
 
-  saveProfile(index);
+  char jsonBuffer[64];
+  snprintf(jsonBuffer, sizeof(jsonBuffer), "{\"id\":%d,\"n\":\"\"}", index);
 
-  if (index == currentProfileIndex)
-  {
-    Serial.println("Active profile was deleted. Resetting to index 0.");
-    int newIndex = -1;
-    for (int i = 0; i < MAX_PROFILES; i++)
-    {
-      if (profiles[i].numSteps > 0)
-      {
-        newIndex = i;
-        break;
-      }
-    }
-
-    if (newIndex == -1)
-    {
-      Serial.println("All profiles empty. Creating default safety profile at index 0.");
-      newIndex = 0;
-      strcpy(profiles[0].name, "Standard Profile");
-      profiles[0].numSteps = 1;
-      profiles[0].steps[0] = {9.0, 30.0};
-      profiles[0].isStepped = false;
-      saveProfile(0);
-    }
-
-    currentProfileIndex = newIndex;
-    saveCurrentProfileIndex();
-    currentProfile = &profiles[currentProfileIndex];
-    updateFullProfileUI();
-  }
-
-  Serial.printf("Profile %d deleted successfully.\n", index);
-}
-
-void saveCurrentProfileIndex()
-{
-  preferences.begin("profiles", false);
-  preferences.putInt("curIdx", currentProfileIndex);
-  preferences.end();
+  publishData(mqtt_topic_import_profile, jsonBuffer, true);
 }
 
 void saveProfile(int index)
 {
   if (index < 0 || index >= MAX_PROFILES)
     return;
-  preferences.begin("profs_data", false);
-  char key[10];
-  sprintf(key, "p_%d", index);
-  preferences.putBytes(key, &profiles[index], sizeof(EspressoProfile));
-  preferences.end();
-  Serial.printf("Profile %d ('%s') saved to NVS.\n", index, profiles[index].name);
+
+  JsonDocument doc;
+  doc["id"] = index;
+  doc["n"] = profiles[index].name;
+  doc["m"] = profiles[index].isStepped ? 1 : 0;
+
+  JsonArray steps = doc["s"].to<JsonArray>();
+  for (int i = 0; i < profiles[index].numSteps; i++)
+  {
+    JsonArray step = steps.add<JsonArray>();
+    step.add(profiles[index].steps[i].target);
+    step.add(profiles[index].steps[i].control);
+  }
+
+  char jsonBuffer[1024];
+  serializeJson(doc, jsonBuffer, sizeof(jsonBuffer));
+
+  publishData(mqtt_topic_import_profile, jsonBuffer, true);
+}
+
+void saveCurrentProfileIndex()
+{
+  char buf[10];
+  itoa(currentProfileIndex, buf, 10);
+  publishData(mqtt_topic_active_profile_id, buf, true);
 }
 
 void updateFullProfileUI()
@@ -2404,9 +2320,6 @@ bool isSlotFree(int index)
 
 void importProfileJson(const char *json)
 {
-  Serial.println("Attempting to update current profile via import...");
-
-  EspressoProfile tempProfile;
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, json);
 
@@ -2414,44 +2327,48 @@ void importProfileJson(const char *json)
   {
     Serial.print("Profile JSON parsing failed: ");
     Serial.println(error.c_str());
-    if (currentPage == 3)
-    {
-      t_systemMessage.text("Import Failed:\r\nInvalid JSON");
-      systemMessageClearTime = millis() + 5000;
-    }
     return;
   }
 
-  strlcpy(tempProfile.name, doc["n"] | "Imported Profile", sizeof(tempProfile.name));
-  tempProfile.isStepped = (doc["m"] == 1);
+  int id = doc["id"] | -1;
 
-  JsonArray steps = doc["s"];
-  tempProfile.numSteps = 0;
-  for (JsonVariant step : steps)
+  if (id < 0 || id >= MAX_PROFILES)
   {
-    if (tempProfile.numSteps >= 128)
-      break;
-    tempProfile.steps[tempProfile.numSteps].target = step[0].as<float>();
-    tempProfile.steps[tempProfile.numSteps].control = step[1].as<float>();
-    tempProfile.numSteps++;
+    Serial.printf("Error: Received invalid profile ID: %d\n", id);
+    return;
   }
 
-  int targetIndex = currentProfileIndex;
+  Serial.printf("Importing data into Profile Slot %d...\n", id);
 
-  Serial.printf("Overwriting profile at index %d with new data (Name: %s)\n", targetIndex, tempProfile.name);
+  strlcpy(profiles[id].name, doc["n"] | "Unnamed", sizeof(profiles[id].name));
+  profiles[id].isStepped = (doc["m"] == 1);
 
-  profiles[targetIndex] = tempProfile;
-  saveProfile(targetIndex);
+  profiles[id].numSteps = 0;
 
-  currentProfile = &profiles[targetIndex];
-  updateFullProfileUI();
-
-  if (currentPage == 3)
+  JsonArray steps = doc["s"];
+  for (JsonVariant step : steps)
   {
-    char msg[50];
-    sprintf(msg, "Profile Updated:\r\n%s", tempProfile.name);
-    t_systemMessage.text(msg);
-    systemMessageClearTime = millis() + 5000;
+    if (profiles[id].numSteps >= 128)
+      break;
+
+    if (step.is<JsonArray>())
+    {
+      profiles[id].steps[profiles[id].numSteps].target = step[0].as<float>();
+      profiles[id].steps[profiles[id].numSteps].control = step[1].as<float>();
+    }
+    else if (step.is<JsonObject>())
+    {
+      profiles[id].steps[profiles[id].numSteps].target = step["t"] | 0.0f;
+      profiles[id].steps[profiles[id].numSteps].control = step["c"] | 1.0f;
+    }
+    profiles[id].numSteps++;
+  }
+
+  if (id == currentProfileIndex)
+  {
+    Serial.println("Current active profile updated via network. Refreshing UI.");
+    currentProfile = &profiles[id];
+    updateFullProfileUI();
   }
 }
 
@@ -3317,8 +3234,6 @@ void handleApiSaveProfile()
   {
     currentProfile = &profiles[id];
     updateFullProfileUI();
-    pendingSettingIndex = SETTING_ID_PROFILING_VALUE;
-    publishSetting();
   }
 
   server.send(200, "application/json", "{\"success\":true}");
@@ -3350,8 +3265,6 @@ void handleApiSetActiveProfile()
     saveCurrentProfileIndex();
     currentProfile = &profiles[index];
     updateFullProfileUI();
-    pendingSettingIndex = SETTING_ID_PROFILING_VALUE;
-    publishSetting();
     server.send(200, "application/json", "{\"success\":true}");
   }
   else
