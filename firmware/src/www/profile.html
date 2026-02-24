@@ -731,40 +731,41 @@
             ctx.textAlign = 'right';
             ctx.textBaseline = 'middle';
 
-            const uniqueTargets = [...new Set(steps.map(s => s.target))].filter(t => t > 0.1).sort((a, b) => a - b);
+            const yTickStep = maxDataValue > 20 ? 5 : 2;
 
-            uniqueTargets.forEach(val => {
-                const yPos = getY(val);
+            for (let yVal = yTickStep; yVal <= scaleMax; yVal += yTickStep) {
+                const yPos = getY(yVal);
                 ctx.beginPath();
                 ctx.strokeStyle = '#666';
                 ctx.lineWidth = 1;
                 ctx.moveTo(getX(0), yPos);
                 ctx.lineTo(getX(0) - 5, yPos);
                 ctx.stroke();
-                ctx.fillText(val.toFixed(1), getX(0) - 8, yPos);
-            });
+                ctx.fillText(yVal.toString(), getX(0) - 8, yPos);
+            }
 
             ctx.textAlign = 'center';
             ctx.textBaseline = 'top';
             ctx.fillText("0", getX(0), h - padBot + 8);
 
-            let labelX = 0;
-            steps.forEach(step => {
-                if (step.control > 0.001) {
-                    labelX += step.control;
+            let xTickStep = 5;
+            if (totalControl > 40) xTickStep = 10;
+            if (totalControl > 100) xTickStep = 20;
 
-                    ctx.beginPath();
-                    ctx.strokeStyle = '#666';
-                    ctx.lineWidth = 1;
-                    ctx.moveTo(getX(labelX), h - padBot);
-                    ctx.lineTo(getX(labelX), h - padBot - 5);
-                    ctx.stroke();
+            for (let xVal = xTickStep; xVal <= totalControl; xVal += xTickStep) {
+                const xPos = getX(xVal);
 
-                    if (getX(labelX) - getX(0) > 20) {
-                        ctx.fillText(labelX.toFixed(1), getX(labelX), h - padBot + 8);
-                    }
+                ctx.beginPath();
+                ctx.strokeStyle = '#666';
+                ctx.lineWidth = 1;
+                ctx.moveTo(xPos, h - padBot);
+                ctx.lineTo(xPos, h - padBot - 5);
+                ctx.stroke();
+
+                if (xPos - getX(0) > 20) {
+                    ctx.fillText(xVal.toString(), xPos, h - padBot + 8);
                 }
-            });
+            }
         }
         function updateStepIndices() {
             document.querySelectorAll('#stepsBody tr').forEach((tr, i) => {
