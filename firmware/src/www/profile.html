@@ -646,7 +646,7 @@
             const modeEl = document.getElementById('editMode');
             const mode = modeEl ? parseInt(modeEl.value) : 0;
 
-            const rows = document.querySelectorAll('#stepsBody tr');
+            const rows = document.querySelectorAll('#stepsBody tr.step-row');
             rows.forEach(tr => {
                 const tVal = parseFloat(tr.querySelector('.step-target').value) || 0;
                 const cVal = parseFloat(tr.querySelector('.step-control').value) || 0;
@@ -673,7 +673,27 @@
             const getX = (val) => padLeft + (val / totalControl) * chartW;
             const getY = (val) => (h - padBot) - (val / scaleMax) * chartH;
 
-            ctx.strokeStyle = '#444';
+            const yTickStep = maxDataValue > 20 ? 5 : 2;
+
+            let xTickStep = 5;
+            if (totalControl > 40) xTickStep = 10;
+            if (totalControl > 100) xTickStep = 20;
+
+            ctx.beginPath();
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 1;
+
+            for (let yVal = yTickStep; yVal <= scaleMax; yVal += yTickStep) {
+                ctx.moveTo(getX(0), getY(yVal));
+                ctx.lineTo(getX(totalControl), getY(yVal));
+            }
+            for (let xVal = xTickStep; xVal <= totalControl; xVal += xTickStep) {
+                ctx.moveTo(getX(xVal), getY(0));
+                ctx.lineTo(getX(xVal), getY(scaleMax));
+            }
+            ctx.stroke();
+
+            ctx.strokeStyle = '#555';
             ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(getX(0), getY(0));
@@ -700,11 +720,11 @@
                     const nextX = currentX + step.control;
                     const nextY = step.target;
 
-                    if (mode === 1) {
+                    if (mode === 1) { // Stepped
                         ctx.lineTo(getX(currentX), getY(nextY));
                         ctx.lineTo(getX(nextX), getY(nextY));
                         currentY = nextY;
-                    } else {
+                    } else { // Ramped
                         ctx.lineTo(getX(nextX), getY(nextY));
                         currentY = nextY;
                     }
@@ -716,7 +736,6 @@
             ctx.fillStyle = '#aaa';
             ctx.font = '11px sans-serif';
             ctx.textAlign = 'center';
-
             ctx.textBaseline = 'top';
             ctx.fillText("s / g", padLeft + chartW / 2, h - 35);
 
@@ -728,19 +747,19 @@
             ctx.fillText("bar / g/s", 0, 0);
             ctx.restore();
 
+            ctx.fillStyle = '#aaa';
+
             ctx.textAlign = 'right';
             ctx.textBaseline = 'middle';
-
-            const yTickStep = maxDataValue > 20 ? 5 : 2;
-
             for (let yVal = yTickStep; yVal <= scaleMax; yVal += yTickStep) {
                 const yPos = getY(yVal);
+
                 ctx.beginPath();
                 ctx.strokeStyle = '#666';
-                ctx.lineWidth = 1;
                 ctx.moveTo(getX(0), yPos);
                 ctx.lineTo(getX(0) - 5, yPos);
                 ctx.stroke();
+
                 ctx.fillText(yVal.toString(), getX(0) - 8, yPos);
             }
 
@@ -748,18 +767,13 @@
             ctx.textBaseline = 'top';
             ctx.fillText("0", getX(0), h - padBot + 8);
 
-            let xTickStep = 5;
-            if (totalControl > 40) xTickStep = 10;
-            if (totalControl > 100) xTickStep = 20;
-
             for (let xVal = xTickStep; xVal <= totalControl; xVal += xTickStep) {
                 const xPos = getX(xVal);
 
                 ctx.beginPath();
                 ctx.strokeStyle = '#666';
-                ctx.lineWidth = 1;
-                ctx.moveTo(xPos, h - padBot);
-                ctx.lineTo(xPos, h - padBot - 5);
+                ctx.moveTo(xPos, getY(0));
+                ctx.lineTo(xPos, getY(0) + 5);
                 ctx.stroke();
 
                 if (xPos - getX(0) > 20) {
