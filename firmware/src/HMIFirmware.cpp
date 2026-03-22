@@ -223,6 +223,9 @@ struct EspressoProfile
 {
   char name[65];
   bool isStepped;
+  bool isTargetWeight;  // false = time, true = weight
+  bool isSourceFlow;    // false = pressure, true = flow
+  int8_t nextProfileId; // Profile ID to run next (-1 for none)
   int numSteps;
   ProfileStep steps[128];
 };
@@ -231,6 +234,13 @@ EspressoProfile *currentProfile = nullptr;
 #define MAX_PROFILES 16
 EspressoProfile profiles[MAX_PROFILES];
 int currentProfileIndex = 0;
+
+EspressoProfile *executingProfile = nullptr;
+unsigned long profileStartTime = 0;
+float profileStartWeight = 0.0f;
+int currentProfileStepIndex = 0;
+float currentStepStartX = 0.0f;
+float prevStepTargetY = 0.0f;
 
 bool currentProfileDirty = false;
 unsigned long profileIndexSettleTime = 0;
@@ -1464,18 +1474,26 @@ void handleIncomingMessage(char *message)
     profilingSourceReceived = true;
     strncpy(profilingSource, value, sizeof(profilingSource) - 1);
     profilingSource[sizeof(profilingSource) - 1] = '\0';
-    bool isPressure = (strcmp(value, "pressure") == 0);
-    btn_SourcePressure.value(isPressure ? 1 : 0);
-    btn_SourceFlow.value(isPressure ? 0 : 1);
+
+    if (strcmp(profilingMode, "profile") != 0)
+    {
+      bool isPressure = (strcmp(value, "pressure") == 0);
+      btn_SourcePressure.value(isPressure ? 1 : 0);
+      btn_SourceFlow.value(isPressure ? 0 : 1);
+    }
   }
   else if (strcmp(key, mqtt_topic_set_profiling_target) == 0)
   {
     profilingTargetReceived = true;
     strncpy(profilingTarget, value, sizeof(profilingTarget) - 1);
     profilingTarget[sizeof(profilingTarget) - 1] = '\0';
-    bool isTime = (strcmp(value, "time") == 0);
-    btn_TargetTime.value(isTime ? 1 : 0);
-    btn_TargetWeight.value(isTime ? 0 : 1);
+
+    if (strcmp(profilingMode, "profile") != 0)
+    {
+      bool isTime = (strcmp(value, "time") == 0);
+      btn_TargetTime.value(isTime ? 1 : 0);
+      btn_TargetWeight.value(isTime ? 0 : 1);
+    }
   }
   else if (strcmp(key, mqtt_topic_set_profiling_flat) == 0)
   {
@@ -1914,6 +1932,13 @@ void updateChart()
       plotPointsAdded = 0;
       sprintf(cmdBuffer, "cle %d,255", waveformID);
       nextion.command(cmdBuffer);
+
+      executingProfile = currentProfile;
+      currentProfileStepIndex = 0;
+      currentStepStartX = 0.0f;
+      prevStepTargetY = 0.0f;
+      profileStartTime = millis();
+      profileStartWeight = weight;
     }
     unsigned long elapsedShotMillis = millis() - shotStartTimeMillis;
     int targetPixelCount = mapf(elapsedShotMillis, 0, MAX_SHOT_TIME_S * 1000, 0, chartWidth);
@@ -1947,26 +1972,46 @@ void updateChart()
       else if (strcmp(profilingMode, "profile") == 0)
       {
         float currentX = 0.0f;
-        if (strcmp(profilingTarget, "time") == 0)
-        {
-          float pixelTime = mapf(plotPointsAdded, 0, chartWidth, 0, MAX_SHOT_TIME_S);
-          currentX = pixelTime;
-        }
-        else
-        {
-          currentX = weight;
-        }
 
-        targetY = getTargetAt(currentX);
-        if (strcmp(profilingSource, "pressure") == 0)
+        if (executingProfile != nullptr)
         {
-          scaledTarget = round(mapf(targetY, PRESSURE_MIN, PRESSURE_MAX, 0, (float)chartHeight));
+          if (!executingProfile->isTargetWeight)
+          {
+            float globalPixelTime = mapf(plotPointsAdded, 0, chartWidth, 0, MAX_SHOT_TIME_S);
+            float globalSegmentStartTime = (profileStartTime - shotStartTimeMillis) / 1000.0f;
+            currentX = max(0.0f, globalPixelTime - globalSegmentStartTime);
+          }
+          else
+          {
+            currentX = max(0.0f, weight - profileStartWeight);
+          }
+
+          targetY = getTargetAt(currentX);
+
+          int nextId = executingProfile->nextProfileId;
+          if (currentProfileStepIndex >= executingProfile->numSteps &&
+              nextId >= 0 && nextId < MAX_PROFILES &&
+              profiles[nextId].numSteps > 0)
+          {
+            executingProfile = &profiles[nextId];
+            currentProfileStepIndex = 0;
+            currentStepStartX = 0.0f;
+
+            profileStartTime = shotStartTimeMillis + (unsigned long)(mapf(plotPointsAdded, 0, chartWidth, 0, MAX_SHOT_TIME_S) * 1000.0f);
+            profileStartWeight = weight;
+            targetY = getTargetAt(0.0f);
+          }
+
+          if (!executingProfile->isSourceFlow)
+          {
+            scaledTarget = round(mapf(targetY, PRESSURE_MIN, PRESSURE_MAX, 0, (float)chartHeight));
+          }
+          else
+          {
+            scaledTarget = round(mapf(targetY, FLOW_RATE_MIN, FLOW_RATE_MAX, 0, (float)chartHeight));
+          }
+          drawChannel2 = true;
         }
-        else
-        {
-          scaledTarget = round(mapf(targetY, FLOW_RATE_MIN, FLOW_RATE_MAX, 0, (float)chartHeight));
-        }
-        drawChannel2 = true;
       }
       if (drawChannel2)
       {
@@ -2012,42 +2057,40 @@ void updateChart()
 
 float getTargetAt(float currentX)
 {
-  if (currentProfile == nullptr || currentProfile->numSteps == 0)
+  if (executingProfile == nullptr || executingProfile->numSteps == 0)
     return 0.0f;
 
-  float stepStartX = 0.0f;
-  float prevTargetY = 0.0f;
-
-  for (int i = 0; i < currentProfile->numSteps; i++)
+  while (currentProfileStepIndex < executingProfile->numSteps)
   {
-    float duration = currentProfile->steps[i].control;
-    float targetY = currentProfile->steps[i].target;
+    ProfileStep &step = executingProfile->steps[currentProfileStepIndex];
 
-    if (duration <= 0.001f)
+    float stepDuration = step.control;
+    float stepEndX = currentStepStartX + stepDuration;
+
+    if (currentX >= stepEndX - 0.001f)
     {
-      prevTargetY = targetY;
+      currentProfileStepIndex++;
+      currentStepStartX = stepEndX;
+      prevStepTargetY = step.target;
       continue;
     }
 
-    float stepEndX = stepStartX + duration;
-
-    if (currentX <= stepEndX)
+    if (executingProfile->isStepped)
     {
-      if (currentProfile->isStepped)
-      {
-        return targetY;
-      }
-      else
-      {
-        return (currentX - stepStartX) * (targetY - prevTargetY) / duration + prevTargetY;
-      }
+      return step.target;
     }
+    else
+    {
+      if (stepDuration <= 0.001f)
+        return step.target;
 
-    stepStartX = stepEndX;
-    prevTargetY = targetY;
+      float ratio = (currentX - currentStepStartX) / stepDuration;
+      ratio = constrain(ratio, 0.0f, 1.0f);
+      return prevStepTargetY + ratio * (step.target - prevStepTargetY);
+    }
   }
 
-  return prevTargetY;
+  return prevStepTargetY;
 }
 
 // --- Input Handling (Encoder & Button) ---
@@ -2282,6 +2325,9 @@ void saveProfile(int index)
   doc["id"] = index;
   doc["n"] = profiles[index].name;
   doc["m"] = profiles[index].isStepped ? 1 : 0;
+  doc["tw"] = profiles[index].isTargetWeight ? 1 : 0;
+  doc["sf"] = profiles[index].isSourceFlow ? 1 : 0;
+  doc["nxt"] = profiles[index].nextProfileId;
 
   JsonArray steps = doc["s"].to<JsonArray>();
   for (int i = 0; i < profiles[index].numSteps; i++)
@@ -2311,6 +2357,14 @@ void updateFullProfileUI()
   sel_mode.value(currentProfile->isStepped ? 1 : 0);
   strncpy(profilingName, currentProfile->name, sizeof(profilingName) - 1);
   isProfilingStepped = currentProfile->isStepped;
+
+  if (strcmp(profilingMode, "profile") == 0)
+  {
+    btn_TargetTime.value(currentProfile->isTargetWeight ? 0 : 1);
+    btn_TargetWeight.value(currentProfile->isTargetWeight ? 1 : 0);
+    btn_SourcePressure.value(currentProfile->isSourceFlow ? 0 : 1);
+    btn_SourceFlow.value(currentProfile->isSourceFlow ? 1 : 0);
+  }
 }
 
 bool isSlotFree(int index)
@@ -2342,6 +2396,9 @@ void importProfileJson(const char *json)
 
   strlcpy(profiles[id].name, doc["n"] | "Unnamed", sizeof(profiles[id].name));
   profiles[id].isStepped = (doc["m"] == 1);
+  profiles[id].isTargetWeight = (doc["tw"] == 1);
+  profiles[id].isSourceFlow = (doc["sf"] == 1);
+  profiles[id].nextProfileId = doc["nxt"] | -1;
 
   profiles[id].numSteps = 0;
 
@@ -2638,6 +2695,12 @@ void profilingModeFlatButtonRelease()
   cleanCurrentPage();
   strlcpy(profilingMode, "flat", sizeof(profilingMode));
   sprintf(payloadBuffer, "flat");
+
+  btn_TargetTime.value((strcmp(profilingTarget, "time") == 0) ? 1 : 0);
+  btn_TargetWeight.value((strcmp(profilingTarget, "time") == 0) ? 0 : 1);
+  btn_SourcePressure.value((strcmp(profilingSource, "pressure") == 0) ? 1 : 0);
+  btn_SourceFlow.value((strcmp(profilingSource, "pressure") == 0) ? 0 : 1);
+
   Serial.print("Publishing payload: ");
   Serial.println(payloadBuffer);
   publishData("profiling_mode", payloadBuffer, true);
@@ -2670,21 +2733,31 @@ void profilingSourceButtonRelease()
 {
   delay(100);
   char payloadBuffer[32];
+  bool isPressure = (btn_SourcePressure.value() == 1);
 
-  if (btn_SourcePressure.value() == 1)
+  if (strcmp(profilingMode, "profile") == 0)
   {
-    sprintf(payloadBuffer, "pressure");
-    strlcpy(profilingSource, "pressure", sizeof(profilingSource));
+    currentProfile->isSourceFlow = !isPressure;
+    currentProfileDirty = true;
+    pendingSettingIndex = SETTING_ID_PROFILING_VALUE;
+    publishSetting();
   }
   else
   {
-    sprintf(payloadBuffer, "flow");
-    strlcpy(profilingSource, "flow", sizeof(profilingSource));
+    if (isPressure)
+    {
+      sprintf(payloadBuffer, "pressure");
+      strlcpy(profilingSource, "pressure", sizeof(profilingSource));
+    }
+    else
+    {
+      sprintf(payloadBuffer, "flow");
+      strlcpy(profilingSource, "flow", sizeof(profilingSource));
+    }
+    Serial.print("Publishing payload: ");
+    Serial.println(payloadBuffer);
+    publishData("profiling_source", payloadBuffer, true);
   }
-
-  Serial.print("Publishing payload: ");
-  Serial.println(payloadBuffer);
-  publishData("profiling_source", payloadBuffer, true);
 }
 
 void systemSettingsButtonRelease()
@@ -2902,21 +2975,31 @@ void profilingTargetButtonRelease()
 {
   delay(100);
   char payloadBuffer[32];
+  bool isTime = (btn_TargetTime.value() == 1);
 
-  if (btn_TargetTime.value() == 1)
+  if (strcmp(profilingMode, "profile") == 0)
   {
-    sprintf(payloadBuffer, "time");
-    strlcpy(profilingTarget, "time", sizeof(profilingTarget));
+    currentProfile->isTargetWeight = !isTime;
+    currentProfileDirty = true;
+    pendingSettingIndex = SETTING_ID_PROFILING_VALUE;
+    publishSetting();
   }
   else
   {
-    sprintf(payloadBuffer, "weight");
-    strlcpy(profilingTarget, "weight", sizeof(profilingTarget));
+    if (isTime)
+    {
+      sprintf(payloadBuffer, "time");
+      strlcpy(profilingTarget, "time", sizeof(profilingTarget));
+    }
+    else
+    {
+      sprintf(payloadBuffer, "weight");
+      strlcpy(profilingTarget, "weight", sizeof(profilingTarget));
+    }
+    Serial.print("Publishing payload: ");
+    Serial.println(payloadBuffer);
+    publishData("profiling_target", payloadBuffer, true);
   }
-
-  Serial.print("Publishing payload: ");
-  Serial.println(payloadBuffer);
-  publishData("profiling_target", payloadBuffer, true);
 }
 
 void profilingEntryFieldReleased(uint8_t id)
@@ -3159,6 +3242,9 @@ void handleApiGetProfiles()
     doc["id"] = i;
     doc["n"] = profiles[i].name;
     doc["m"] = profiles[i].isStepped ? 1 : 0;
+    doc["tw"] = profiles[i].isTargetWeight ? 1 : 0;
+    doc["sf"] = profiles[i].isSourceFlow ? 1 : 0;
+    doc["nxt"] = profiles[i].nextProfileId;
 
     JsonArray steps = doc["s"].to<JsonArray>();
     for (int j = 0; j < profiles[i].numSteps; j++)
@@ -3208,6 +3294,9 @@ void handleApiSaveProfile()
 
   strlcpy(profiles[id].name, doc["n"] | "Unnamed", sizeof(profiles[id].name));
   profiles[id].isStepped = (doc["m"] == 1);
+  profiles[id].isTargetWeight = (doc["tw"] == 1);
+  profiles[id].isSourceFlow = (doc["sf"] == 1);
+  profiles[id].nextProfileId = doc["nxt"] | -1;
 
   JsonArray steps = doc["s"];
   profiles[id].numSteps = 0;

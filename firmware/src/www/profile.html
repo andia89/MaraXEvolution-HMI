@@ -112,7 +112,8 @@
             appearance: none;
         }
 
-        input:focus {
+        input:focus,
+        select:focus {
             outline: 2px solid var(--accent);
             border-color: transparent;
         }
@@ -138,6 +139,11 @@
             min-width: 200px;
         }
 
+        .col-small {
+            flex: 0.5;
+            min-width: 120px;
+        }
+
         label {
             display: block;
             margin-bottom: 5px;
@@ -155,6 +161,26 @@
             font-weight: bold;
             margin-left: 8px;
             text-transform: uppercase;
+        }
+
+        .chain-active-badge {
+            background: #886611;
+            color: #fff;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            font-weight: bold;
+            margin-left: 8px;
+            text-transform: uppercase;
+        }
+
+        .chain-badge {
+            display: inline-block;
+            background: #555;
+            color: #fff;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 0.75em;
         }
 
         .hidden {
@@ -251,15 +277,12 @@
                 flex: 1;
             }
 
-            /* Update these rules inside the @media screen and (max-width: 700px) block */
-
             #stepsTable thead {
                 display: none;
             }
 
             #stepsTable tr.step-row {
                 display: grid;
-                /* 4 columns: Handle | Target | Control | Delete */
                 grid-template-columns: 30px 1fr 1fr 40px;
                 gap: 5px 10px;
                 align-items: end;
@@ -418,31 +441,57 @@
         <div class="hidden" id="editorView">
             <div class="card">
                 <h2 id="editorTitle">Edit Profile</h2>
+
                 <div class="row">
                     <div class="col">
                         <label>Profile Name</label>
                         <input id="editName" maxlength="64" placeholder="e.g. Turbo Bloom">
                     </div>
-                    <div class="col">
-                        <label>Mode</label>
+                    <div class="col-small">
+                        <label>Style</label>
                         <select id="editMode" onchange="drawPreview()">
                             <option value="0">Ramped</option>
                             <option value="1">Stepped</option>
                         </select>
                     </div>
                 </div>
+
+                <div class="row">
+                    <div class="col-small">
+                        <label>Target (X-Axis)</label>
+                        <select id="editTarget" onchange="updateTableHeaders(); drawPreview();">
+                            <option value="0">Time (s)</option>
+                            <option value="1">Weight (g)</option>
+                        </select>
+                    </div>
+                    <div class="col-small">
+                        <label>Source (Y-Axis)</label>
+                        <select id="editSource" onchange="updateTableHeaders(); drawPreview();">
+                            <option value="0">Pressure (bar)</option>
+                            <option value="1">Flow (g/s)</option>
+                        </select>
+                    </div>
+                    <div class="col">
+                        <label>When Finished...</label>
+                        <select id="editNextProfile" onchange="drawPreview()">
+                            <option value="-1">End Shot</option>
+                        </select>
+                    </div>
+                </div>
+
                 <h3>Profile Visualization</h3>
                 <div class="chart-container">
                     <canvas id="profileChart"></canvas>
                 </div>
+
                 <h3>Profile Steps</h3>
                 <table id="stepsTable">
                     <thead>
                         <tr>
                             <th style="width: 30px"></th>
                             <th style="width: 50px">#</th>
-                            <th>Target (bar / g/s)</th>
-                            <th>Control (g / s)</th>
+                            <th id="thTarget">Setpoint (bar)</th>
+                            <th id="thControl">Trigger (s)</th>
                             <th style="width: 60px"></th>
                         </tr>
                     </thead>
@@ -460,6 +509,53 @@
     <script>
         let profiles = [];
         let currentEditIndex = -1;
+        let isDirty = false;
+        let currentHash = window.location.hash;
+        let isRevertingHash = false;
+
+        window.addEventListener('beforeunload', (e) => {
+            if (isDirty) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        });
+
+        window.addEventListener('hashchange', () => {
+            if (isRevertingHash) {
+                isRevertingHash = false;
+                return;
+            }
+
+            if (isDirty) {
+                if (!confirm("You have unsaved changes. Are you sure you want to discard them?")) {
+                    isRevertingHash = true;
+                    window.location.hash = currentHash; // Revert URL back
+                    return;
+                }
+            }
+
+            isDirty = false;
+            currentHash = window.location.hash;
+            handleRouting();
+        });
+
+        function handleRouting() {
+            const hash = window.location.hash;
+            if (hash.startsWith('#edit-')) {
+                const index = parseInt(hash.replace('#edit-', ''), 10);
+                if (profiles.length > 0 && profiles[index]) {
+                    openEditorUI(index);
+                    return;
+                }
+            }
+            // Default fallback
+            openListUI();
+        }
+
+        function markDirty() {
+            isDirty = true;
+        }
+
         async function fetchProfiles() {
             try {
                 const res = await fetch('/api/profiles?_=' + Date.now());
@@ -467,13 +563,16 @@
                 const data = await res.json();
                 profiles = data.profiles;
                 renderList(data.active);
-                if (currentEditIndex !== -1 && !document.getElementById('editorView').classList.contains('hidden')) {
-                    editProfile(currentEditIndex);
-                }
             } catch (e) {
                 showStatus('Error fetching profiles: ' + e.message, true);
             }
         }
+
+        async function init() {
+            await fetchProfiles();
+            handleRouting();
+        }
+
         function renderList(activeIndex) {
             const listEl = document.getElementById('profileList');
             listEl.innerHTML = '';
@@ -481,43 +580,139 @@
                 listEl.innerHTML = '<div style="text-align:center; padding:20px; color:#666">No profiles found</div>';
                 return;
             }
+
+            const activeChain = new Set();
+            let curr = activeIndex;
+            while (curr >= 0 && curr < profiles.length && profiles[curr].s.length > 0 && !activeChain.has(curr)) {
+                activeChain.add(curr);
+                curr = profiles[curr].nxt !== undefined ? profiles[curr].nxt : -1;
+            }
+
             const table = document.createElement('table');
             table.innerHTML = '<thead><tr><th>Slot</th><th>Name</th><th>Steps</th><th>Actions</th></tr></thead><tbody></tbody>';
             const tbody = table.querySelector('tbody');
+
             profiles.forEach((p, idx) => {
                 const isEmpty = (p.s.length === 0);
+
+                let chainText = '';
+                if (!isEmpty && p.nxt >= 0) {
+                    chainText = `<div style="margin-top: 6px;"><span class="chain-badge">Chains to ID: ${p.nxt}</span></div>`;
+                }
+
+                let activeBadgeHtml = '';
+                if (idx === activeIndex) {
+                    activeBadgeHtml = '<span class="active-badge">ACTIVE START</span>';
+                } else if (activeChain.has(idx)) {
+                    activeBadgeHtml = '<span class="chain-active-badge">IN CHAIN</span>';
+                }
+
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td>Slot ${idx} ${idx === activeIndex ? '<span class="active-badge">ACTIVE</span>' : ''}</td>
-                    <td><strong style="${isEmpty ? 'color:#777; font-style:italic' : ''}">${isEmpty ? 'Empty Slot' : p.n}</strong></td>
-                    <td>${isEmpty ? '-' : p.s.length + ' steps'}</td>
-                    <td>
-                        <div style="display:flex; gap:5px;">
-                            <button class="btn btn-primary" onclick="editProfile(${idx})">
-                                ${isEmpty ? 'Create' : 'Edit'}
-                            </button>
-                            <button class="btn btn-secondary" onclick="setActive(${idx})" 
-                                ${(idx === activeIndex || isEmpty) ? 'disabled' : ''}>Load</button>
-                            <button class="btn btn-danger" onclick="deleteProfile(${idx})"
-                                ${isEmpty ? 'disabled' : ''}>Clear</button>
-                        </div>
-                    </td>
-                `;
+            <td>Slot ${idx} ${activeBadgeHtml}</td>
+            <td>
+                <strong style="${isEmpty ? 'color:#777; font-style:italic' : ''}">${isEmpty ? 'Empty Slot' : p.n}</strong>
+                ${chainText}
+            </td>
+            <td>${isEmpty ? '-' : p.s.length + ' steps'}</td>
+            <td>
+                <div style="display:flex; gap:5px;">
+                    <button class="btn btn-primary" onclick="editProfile(${idx})">
+                        ${isEmpty ? 'Create' : 'Edit'}
+                    </button>
+                    <button class="btn btn-secondary" onclick="setActive(${idx})" 
+                        ${(idx === activeIndex || isEmpty) ? 'disabled' : ''}>Load</button>
+                    <button class="btn btn-danger" onclick="deleteProfile(${idx})"
+                        ${isEmpty ? 'disabled' : ''}>Clear</button>
+                </div>
+            </td>
+        `;
                 tbody.appendChild(tr);
             });
             listEl.appendChild(table);
         }
+
+        function showList() {
+            if (isDirty && !confirm("You have unsaved changes. Are you sure you want to discard them?")) {
+                return;
+            }
+            isDirty = false;
+            window.location.hash = 'list'; // Triggers hashchange router
+        }
+
+        async function openListUI() {
+            currentEditIndex = -1;
+            document.getElementById('editorView').classList.add('hidden');
+            document.getElementById('listView').classList.remove('hidden');
+            await fetchProfiles(); // Guarantee fresh data on return
+        }
+
         function editProfile(index) {
+            window.location.hash = 'edit-' + index; // Triggers hashchange router
+        }
+
+        function populateNextProfileDropdown() {
+            const select = document.getElementById('editNextProfile');
+            select.innerHTML = '<option value="-1">End Shot</option>';
+
+            profiles.forEach((p, idx) => {
+                if (p.s.length > 0 && idx !== currentEditIndex) {
+                    const opt = document.createElement('option');
+                    opt.value = idx;
+                    opt.innerText = `Chain to ID ${idx}: ${p.n}`;
+                    select.appendChild(opt);
+                }
+            });
+        }
+
+        function updateTableHeaders() {
+            const isWeight = document.getElementById('editTarget').value === "1";
+            const isFlow = document.getElementById('editSource').value === "1";
+
+            document.getElementById('thTarget').innerText = isFlow ? "Setpoint (g/s)" : "Setpoint (bar)";
+            document.getElementById('thControl').innerText = isWeight ? "Trigger (g)" : "Trigger (s)";
+        }
+
+        function openEditorUI(index) {
             currentEditIndex = index;
             const p = profiles[index];
             document.getElementById('editorTitle').innerText = `Editing Slot ${index}`;
-            document.getElementById('editName').value = p.n;
-            document.getElementById('editMode').value = p.m;
+
+            const nameInput = document.getElementById('editName');
+            const modeInput = document.getElementById('editMode');
+            const targetInput = document.getElementById('editTarget');
+            const sourceInput = document.getElementById('editSource');
+            const nextInput = document.getElementById('editNextProfile');
+
+            nameInput.value = p.n;
+            modeInput.value = p.m;
+            targetInput.value = p.tw ? "1" : "0";
+            sourceInput.value = p.sf ? "1" : "0";
+
+            populateNextProfileDropdown();
+
+            if (p.nxt === index) {
+                nextInput.value = "-1";
+            } else {
+                nextInput.value = p.nxt !== undefined ? p.nxt : "-1";
+            }
+
+            nameInput.oninput = markDirty;
+            modeInput.onchange = () => { markDirty(); drawPreview(); };
+            targetInput.onchange = () => { markDirty(); updateTableHeaders(); drawPreview(); };
+            sourceInput.onchange = () => { markDirty(); updateTableHeaders(); drawPreview(); };
+            nextInput.onchange = () => { markDirty(); drawPreview(); };
+
+            updateTableHeaders();
             renderSteps(p.s);
+
             document.getElementById('listView').classList.add('hidden');
             document.getElementById('editorView').classList.remove('hidden');
+
+            isDirty = false;
             setTimeout(drawPreview, 50);
         }
+
         function renderSteps(steps) {
             const tbody = document.getElementById('stepsBody');
             tbody.innerHTML = '';
@@ -527,6 +722,27 @@
                 addStepRow(t, c);
             });
         }
+
+        function addStepRow(target = 9.0, control = 10.0) {
+            const tbody = document.getElementById('stepsBody');
+            const tr = document.createElement('tr');
+            tr.className = 'step-row';
+
+            tr.innerHTML = `
+        <td class="drag-handle">☰</td>
+        <td><span class="step-idx"></span></td>
+        <td><input type="number" step="0.1" class="step-target" value="${target}" oninput="markDirty(); drawPreview()"></td>
+        <td><input type="number" step="0.1" class="step-control" value="${control}" oninput="markDirty(); drawPreview()"></td>
+        <td><button class="btn btn-danger" style="padding: 5px 10px;" onclick="this.closest('tr').remove(); updateStepIndices(); markDirty(); drawPreview();">✕</button></td>
+    `;
+
+            tbody.appendChild(tr);
+            updateStepIndices();
+            drawPreview();
+            addDragListeners(tr);
+            markDirty(); // Adding a row makes the profile dirty
+        }
+
         let draggedRow = null;
         const placeholder = document.createElement('tr');
         placeholder.className = 'placeholder-row';
@@ -537,7 +753,6 @@
             handle.addEventListener('mousedown', () => row.setAttribute('draggable', 'true'));
             handle.addEventListener('mouseup', () => row.removeAttribute('draggable'));
             handle.addEventListener('mouseleave', () => row.removeAttribute('draggable'));
-
             handle.addEventListener('touchstart', () => row.setAttribute('draggable', 'true'), { passive: true });
             handle.addEventListener('touchend', () => row.removeAttribute('draggable'));
             handle.addEventListener('touchcancel', () => row.removeAttribute('draggable'));
@@ -546,9 +761,7 @@
                 draggedRow = this;
                 e.dataTransfer.effectAllowed = 'move';
                 e.dataTransfer.setData('text/plain', '');
-
                 placeholder.innerHTML = `<td colspan="5" style="height: ${this.offsetHeight}px;"></td>`;
-
                 setTimeout(() => {
                     this.classList.add('dragging-hidden');
                     this.parentNode.insertBefore(placeholder, this.nextSibling);
@@ -558,7 +771,6 @@
             row.addEventListener('dragover', function (e) {
                 e.preventDefault();
                 e.dataTransfer.dropEffect = 'move';
-
                 if (draggedRow === this || !draggedRow) return;
 
                 const bounding = this.getBoundingClientRect();
@@ -572,10 +784,7 @@
             });
 
             row.addEventListener('dragenter', e => e.preventDefault());
-
-            row.addEventListener('drop', function (e) {
-                e.preventDefault();
-            });
+            row.addEventListener('drop', e => e.preventDefault());
 
             row.addEventListener('dragend', function (e) {
                 this.classList.remove('dragging-hidden');
@@ -587,38 +796,17 @@
                 }
 
                 draggedRow = null;
-
                 updateStepIndices();
+                markDirty();
                 drawPreview();
             });
         }
-        function addStepRow(target = 9.0, control = 10.0) {
-            const tbody = document.getElementById('stepsBody');
-            const tr = document.createElement('tr');
 
-            tr.className = 'step-row';
-
-            tr.innerHTML = `
-        <td class="drag-handle">☰</td>
-        <td><span class="step-idx"></span></td>
-        <td><input type="number" step="0.1" class="step-target" value="${target}" oninput="drawPreview()"></td>
-        <td><input type="number" step="0.1" class="step-control" value="${control}" oninput="drawPreview()"></td>
-        <td><button class="btn btn-danger" style="padding: 5px 10px;" onclick="this.closest('tr').remove(); updateStepIndices(); drawPreview();">✕</button></td>
-    `;
-
-            tbody.appendChild(tr);
-            updateStepIndices();
-            drawPreview();
-
-            addDragListeners(tr);
-        }
         function drawPreview() {
             const canvas = document.getElementById('profileChart');
             if (!canvas) return;
-
             const container = canvas.parentElement;
             if (!container) return;
-
             const rect = container.getBoundingClientRect();
             if (rect.width === 0 || rect.height === 0) return;
 
@@ -629,22 +817,21 @@
             canvas.height = rect.height * dpr;
             canvas.style.width = rect.width + 'px';
             canvas.style.height = rect.height + 'px';
-
             ctx.scale(dpr, dpr);
 
             const w = rect.width;
             const h = rect.height;
-
             const padTop = 10;
             const padBot = 60;
             const padLeft = 45;
             const padRight = 40;
-
             ctx.clearRect(0, 0, w, h);
 
             const steps = [];
             const modeEl = document.getElementById('editMode');
-            const mode = modeEl ? parseInt(modeEl.value) : 0;
+            const activeMode = modeEl ? parseInt(modeEl.value) : 0;
+            const isWeight = document.getElementById('editTarget').value === "1";
+            const isFlow = document.getElementById('editSource').value === "1";
 
             const rows = document.querySelectorAll('#stepsBody tr.step-row');
             rows.forEach(tr => {
@@ -653,7 +840,27 @@
                 steps.push({ target: tVal, control: cVal });
             });
 
-            if (steps.length === 0) return;
+            const chainedProfiles = [];
+            let nextId = parseInt(document.getElementById('editNextProfile').value);
+            const visited = new Set();
+            visited.add(currentEditIndex);
+
+            while (nextId >= 0 && nextId < profiles.length && !visited.has(nextId)) {
+                const p = profiles[nextId];
+                if (!p || !p.s || p.s.length === 0) break;
+                chainedProfiles.push({
+                    id: nextId,
+                    m: p.m,
+                    steps: p.s.map(step => ({
+                        target: Array.isArray(step) ? step[0] : step.t,
+                        control: Array.isArray(step) ? step[1] : step.c
+                    }))
+                });
+                visited.add(nextId);
+                nextId = p.nxt !== undefined ? p.nxt : -1;
+            }
+
+            if (steps.length === 0 && chainedProfiles.length === 0) return;
 
             let totalControl = 0;
             let maxDataValue = 0;
@@ -661,6 +868,13 @@
             steps.forEach(s => {
                 totalControl += s.control;
                 if (s.target > maxDataValue) maxDataValue = s.target;
+            });
+
+            chainedProfiles.forEach(cp => {
+                cp.steps.forEach(s => {
+                    totalControl += s.control;
+                    if (s.target > maxDataValue) maxDataValue = s.target;
+                });
             });
 
             if (totalControl < 1) totalControl = 10;
@@ -674,7 +888,6 @@
             const getY = (val) => (h - padBot) - (val / scaleMax) * chartH;
 
             const yTickStep = maxDataValue > 20 ? 5 : 2;
-
             let xTickStep = 5;
             if (totalControl > 40) xTickStep = 10;
             if (totalControl > 100) xTickStep = 20;
@@ -709,7 +922,6 @@
 
             let currentX = 0;
             let currentY = (steps.length > 0 && steps[0].control <= 0.001) ? steps[0].target : 0;
-
             ctx.moveTo(getX(currentX), getY(currentY));
 
             steps.forEach(step => {
@@ -719,79 +931,95 @@
                 } else {
                     const nextX = currentX + step.control;
                     const nextY = step.target;
-
-                    if (mode === 1) { // Stepped
+                    if (activeMode === 1) { // Stepped
                         ctx.lineTo(getX(currentX), getY(nextY));
                         ctx.lineTo(getX(nextX), getY(nextY));
-                        currentY = nextY;
                     } else { // Ramped
                         ctx.lineTo(getX(nextX), getY(nextY));
-                        currentY = nextY;
                     }
+                    currentY = nextY;
                     currentX = nextX;
                 }
             });
             ctx.stroke();
 
+            chainedProfiles.forEach((cp, index) => {
+                ctx.beginPath();
+                ctx.strokeStyle = index % 2 === 0 ? '#55aadd' : '#aa55dd';
+                ctx.lineWidth = 2.0;
+                ctx.setLineDash([5, 5]);
+                ctx.moveTo(getX(currentX), getY(currentY));
+
+                cp.steps.forEach(step => {
+                    if (step.control <= 0.001) {
+                        currentY = step.target;
+                        ctx.lineTo(getX(currentX), getY(currentY));
+                    } else {
+                        const nextX = currentX + step.control;
+                        const nextY = step.target;
+                        if (cp.m === 1) { // Stepped
+                            ctx.lineTo(getX(currentX), getY(nextY));
+                            ctx.lineTo(getX(nextX), getY(nextY));
+                        } else { // Ramped
+                            ctx.lineTo(getX(nextX), getY(nextY));
+                        }
+                        currentY = nextY;
+                        currentX = nextX;
+                    }
+                });
+                ctx.stroke();
+            });
+            ctx.setLineDash([]);
+
             ctx.fillStyle = '#aaa';
             ctx.font = '11px sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'top';
-            ctx.fillText("s / g", padLeft + chartW / 2, h - 35);
+            ctx.fillText(isWeight ? "Weight (g)" : "Time (s)", padLeft + chartW / 2, h - 35);
 
             ctx.save();
             ctx.translate(15, padTop + chartH / 2);
             ctx.rotate(-Math.PI / 2);
             ctx.textAlign = 'center';
             ctx.textBaseline = 'bottom';
-            ctx.fillText("bar / g/s", 0, 0);
+            ctx.fillText(isFlow ? "Flow (g/s)" : "Pressure (bar)", 0, 0);
             ctx.restore();
 
             ctx.fillStyle = '#aaa';
-
             ctx.textAlign = 'right';
             ctx.textBaseline = 'middle';
             for (let yVal = yTickStep; yVal <= scaleMax; yVal += yTickStep) {
                 const yPos = getY(yVal);
-
                 ctx.beginPath();
                 ctx.strokeStyle = '#666';
                 ctx.moveTo(getX(0), yPos);
                 ctx.lineTo(getX(0) - 5, yPos);
                 ctx.stroke();
-
                 ctx.fillText(yVal.toString(), getX(0) - 8, yPos);
             }
 
             ctx.textAlign = 'center';
             ctx.textBaseline = 'top';
             ctx.fillText("0", getX(0), h - padBot + 8);
-
             for (let xVal = xTickStep; xVal <= totalControl; xVal += xTickStep) {
                 const xPos = getX(xVal);
-
                 ctx.beginPath();
                 ctx.strokeStyle = '#666';
                 ctx.moveTo(xPos, getY(0));
                 ctx.lineTo(xPos, getY(0) + 5);
                 ctx.stroke();
-
                 if (xPos - getX(0) > 20) {
                     ctx.fillText(xVal.toString(), xPos, h - padBot + 8);
                 }
             }
         }
+
         function updateStepIndices() {
             document.querySelectorAll('#stepsBody tr').forEach((tr, i) => {
                 tr.querySelector('.step-idx').innerText = i + 1;
             });
         }
-        function showList() {
-            currentEditIndex = -1;
-            document.getElementById('editorView').classList.add('hidden');
-            document.getElementById('listView').classList.remove('hidden');
-            fetchProfiles();
-        }
+
         async function saveCurrentProfile() {
             const steps = [];
             document.querySelectorAll('#stepsBody tr').forEach(tr => {
@@ -800,12 +1028,17 @@
                     parseFloat(tr.querySelector('.step-control').value) || 0
                 ]);
             });
+
             const payload = {
                 id: currentEditIndex,
                 n: document.getElementById('editName').value,
                 m: parseInt(document.getElementById('editMode').value),
+                tw: parseInt(document.getElementById('editTarget').value),
+                sf: parseInt(document.getElementById('editSource').value),
+                nxt: parseInt(document.getElementById('editNextProfile').value),
                 s: steps
             };
+
             try {
                 const res = await fetch('/api/profile', {
                     method: 'POST',
@@ -814,7 +1047,8 @@
                 });
                 if (res.ok) {
                     showStatus('Profile saved successfully!', false);
-                    showList();
+                    isDirty = false; // Clear dirty flag
+                    window.location.hash = 'list'; // Clean return
                 } else {
                     showStatus('Save failed', true);
                 }
@@ -822,6 +1056,7 @@
                 showStatus('Error saving: ' + e.message, true);
             }
         }
+
         async function setActive(index) {
             try {
                 await fetch(`/api/setactive?index=${index}`, { method: 'POST' });
@@ -831,6 +1066,7 @@
                 showStatus('Error: ' + e.message, true);
             }
         }
+
         async function deleteProfile(index) {
             if (!confirm(`Are you sure you want to clear slot ${index}?`)) return;
             try {
@@ -841,6 +1077,7 @@
                 showStatus('Error: ' + e.message, true);
             }
         }
+
         function showStatus(msg, isError) {
             const el = document.getElementById('status');
             el.innerText = msg;
@@ -849,8 +1086,10 @@
             el.classList.remove('hidden');
             setTimeout(() => el.classList.add('hidden'), 3000);
         }
+
         window.addEventListener('resize', drawPreview);
-        fetchProfiles();
+
+        init();
     </script>
     <script src="https://bernardo-castilho.github.io/DragDropTouch/DragDropTouch.js"></script>
 </body>
