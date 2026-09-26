@@ -2,6 +2,9 @@
 // --- LIBRARIES ---
 // =================================================================
 #include <WiFi.h>
+#include "NextionTftUpdate.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <ESP32RotaryEncoder.h>
 #include "NextionX2.h"
 #include <ArduinoOTA.h>
@@ -43,6 +46,12 @@ const char *WIFI_PASSWORD = "";
 // --- OTA (Over-the-Air Updates) ---
 const char *OTA_HOSTNAME = "esp32-arduino-screen";
 const char *OTA_PASSWORD = "1234";
+
+// Nextion TFT updates: Python connects here even when the normal portal is off.
+// Set a separate shared token if desired; the default reuses your OTA password.
+const char *TFT_UPDATE_TOKEN = OTA_PASSWORD;
+const uint16_t TFT_UPDATE_PORT = 8080;
+NextionTftUpdate tftUpdater(Serial1, TFT_UPDATE_TOKEN, TFT_UPDATE_PORT);
 
 // Received bools for settings
 bool brewModeReceived = false;
@@ -98,6 +107,30 @@ const long ROTARY_MIN_BOUND = 0;
 const long ROTARY_MAX_BOUND = 12;
 
 // --- Nextion Display Communication Port ---
+// This gate lets the rest of the HMI resume after a failed flash without
+// accidentally feeding ordinary UI commands into an unfinished TFT transfer.
+// NextionX2 accepts a Stream-compatible object; the uploader uses raw Serial1.
+class HmiDisplaySerial : public Stream
+{
+public:
+  bool enabled = true;
+  void begin(uint32_t baud) { Serial1.begin(baud, SERIAL_8N1, SERIAL_RX, SERIAL_TX); }
+  int available() override { return enabled ? Serial1.available() : 0; }
+  int read() override { return enabled ? Serial1.read() : -1; }
+  int peek() override { return enabled ? Serial1.peek() : -1; }
+  void flush() override
+  {
+    if (enabled)
+      Serial1.flush(true);
+  }
+  size_t write(uint8_t value) override { return enabled ? Serial1.write(value) : 1; }
+  size_t write(const uint8_t *data, size_t size) override
+  {
+    return enabled ? Serial1.write(data, size) : size;
+  }
+  using Print::write;
+};
+HmiDisplaySerial hmiDisplaySerial;
 NextionComPort nextion;
 
 // --- ESP-NOW Auto-Pairing ---
@@ -123,6 +156,16 @@ typedef struct struct_pairing
   char identifier[10];
 } struct_pairing;
 const char *espIdentifier = "espresso";
+
+// The Wi-Fi callback must never use NextionX2 or touch Serial1. Queue packets
+// for loop(), which owns all display traffic, including TFT upload traffic.
+struct HmiRxPacket
+{
+  uint8_t mac[6];
+  uint16_t len;
+  uint8_t data[sizeof(struct_message)];
+};
+QueueHandle_t hmiRxQueue = nullptr;
 
 struct_message myData;
 struct_pairing pairingData;
@@ -369,6 +412,10 @@ void loop();
 void setup_wifi();
 void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len);
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status);
+void processReceivedPacket(const uint8_t *mac_addr, const uint8_t *incomingData, int len);
+void processReceivedPackets(bool discard);
+const char *canStartTftUpdate();
+void resumeAfterTftUpdate(bool displayReady);
 void publishData(const char *key, const char *value, bool esNowSendNow = true);
 bool parseBool(const char *value);
 void handleIncomingMessage(char *message);
@@ -444,11 +491,85 @@ float mapf(float x, float in_min, float in_max, float out_min, float out_max);
 // --- FUNCTION DEFINITIONS ---
 // =================================================================
 
+// --- TFT Update Integration ---
+const char *canStartTftUpdate()
+{
+  if (!setupFinished)
+    return "HMI setup has not finished";
+
+  if (pumpIsOn && !SIMULATION_MODE)
+    return "Stop the pump before updating the display";
+
+  if (cleaningCycleActive || cleaningRequestTime ||
+      calibrationStep || calibrationRequestTime)
+    return "Finish cleaning/calibration before updating the display";
+
+  if (pendingSettingIndex != -1 || profileIndexPendingSave)
+    return "Wait for pending encoder settings to settle";
+
+  return nullptr;
+}
+
+void resumeAfterTftUpdate(bool displayReady)
+{
+  hmiDisplaySerial.enabled = displayReady;
+  // Do not replay old controller/encoder events gathered during the update.
+  if (hmiRxQueue != nullptr)
+    xQueueReset(hmiRxQueue);
+  portENTER_CRITICAL(&encoderMux);
+  encoderTicks = 0;
+  buttonPressed = false;
+  portEXIT_CRITICAL(&encoderMux);
+  lastEncoderValue = rotaryEncoder.getEncoderValue();
+  pendingSettingIndex = -1;
+  isItemSelected = false;
+  currentSelectionIndex = 0;
+  profileIndexPendingSave = false;
+  chartWidth = chartHeight = 0;
+  plotPointsAdded = 0;
+  chartStopTime = shotStartTimeMillis = 0;
+  shotIsActive = false;
+  lastHxTemp_sent = lastBoilerTemp_sent = lastPressure_sent = -1.0f;
+  lastTempSetpoint_sent = lastWeight_sent = -1.0f;
+  lastShotTime_sent = -1;
+  lastMachineState_sent[0] = '\0';
+
+  // The same NextionComPort and components retain all registered callbacks.
+  // The updater restored Serial1 to 115200, preserving the original D9/D8 pins.
+  if (displayReady)
+  {
+    nextion.command("bkcmd=0");
+    nextion.command("sendme");
+    delay(100);
+    nextion.update();
+    currentPage = nextion.getCurrentPageID();
+    va_highlight.value(HIGHLIGHT_COLOR);
+    nextion.command("vis splash,0");
+    updateFullProfileUI();
+    cacheSliderData();
+    cacheEntriesData();
+    cleanCurrentPage();
+  }
+  brewModeReceived = steamBoostReceived = flatValueReceived = false;
+  profilingSourceReceived = profilingTargetReceived = profilingModeReceived = false;
+  currentProfileReceived = tempsetReceived = false;
+  lastControllerMessageTime = millis();
+  if (isPaired && !OFFLINE_MODE)
+    publishData("request", "settings", true);
+  Serial.println(displayReady ? "Nextion update ended; normal HMI resumed."
+                              : "Nextion update ended; ESP32 resumed, display recovery may be required.");
+}
+
 // --- Setup & Core Loop ---
 void setup()
 {
   Serial.begin(115200);
   setupWebRoutes();
+  hmiRxQueue = xQueueCreate(32, sizeof(HmiRxPacket));
+  if (hmiRxQueue == nullptr)
+  {
+    Serial.println("Could not allocate ESP-NOW receive queue.");
+  }
   rotaryEncoder.setEncoderType(EncoderType::FLOATING);
   rotaryEncoder.setBoundaries(ROTARY_MIN_BOUND, ROTARY_MAX_BOUND, true); // Example: Set target brew temp
   rotaryEncoder.onTurned(&knobCallback);
@@ -457,18 +578,21 @@ void setup()
   lastEncoderValue = rotaryEncoder.getEncoderValue();
 
   Serial1.begin(9600, SERIAL_8N1, SERIAL_RX, SERIAL_TX);
-  nextion.begin(Serial1, 9600);
+  nextion.begin(hmiDisplaySerial, 9600);
   nextion.command("baud=115200");
   pinMode(ENCODER_PIN_A, INPUT_PULLUP);
   pinMode(ENCODER_PIN_B, INPUT_PULLUP);
   delay(2500);
 
   Serial1.begin(115200, SERIAL_8N1, SERIAL_RX, SERIAL_TX);
-  nextion.begin(Serial1, 115200);
+  nextion.begin(hmiDisplaySerial, 115200);
   currentProfile = &profiles[0];
   if (!OFFLINE_MODE)
   {
     setup_wifi();
+    tftUpdater.begin(canStartTftUpdate);
+    Serial.printf("Nextion update API: http://%s:%u/api/nextion/status\n",
+                  WiFi.localIP().toString().c_str(), TFT_UPDATE_PORT);
   }
 
   if (!OFFLINE_MODE)
@@ -548,6 +672,33 @@ void setup()
 
 void loop()
 {
+  // Serialize all Nextion access in this task. During flashing, discard live
+  // ESP-NOW telemetry; request a fresh settings snapshot when the upload ends.
+  processReceivedPackets(tftUpdater.busy());
+  if (!OFFLINE_MODE)
+  {
+    tftUpdater.handle();
+  }
+  bool displayReady;
+  if (tftUpdater.takeFinished(displayReady))
+  {
+    resumeAfterTftUpdate(displayReady);
+  }
+  if (tftUpdater.busy())
+  {
+    hmiDisplaySerial.enabled = false;
+    // Do not run NextionX2, the normal portal, serial console commands, or
+    // ArduinoOTA concurrently with the TFT transfer. Wi-Fi tasks still run.
+    portENTER_CRITICAL(&encoderMux);
+    encoderTicks = 0;
+    buttonPressed = false;
+    portEXIT_CRITICAL(&encoderMux);
+    // Drop console input rather than execute stale commands after a flash.
+    for (int i = 0; i < 256 && Serial.available(); ++i)
+      Serial.read();
+    delay(1);
+    return;
+  }
   if (Serial.available())
   {
     static char cmdBuffer[4096];
@@ -613,7 +764,7 @@ void loop()
     Serial.println("Settled: Saved new active profile index to NVS.");
   }
 
-  if (chartWidth <= 0 || chartHeight <= 0)
+  if (hmiDisplaySerial.enabled && (chartWidth <= 0 || chartHeight <= 0))
   {
     Serial.println("Attempting to fetch chart dimensions...");
     chartWidth = wf_pressure.attributeValue("w");
@@ -727,9 +878,19 @@ void loop()
   }
 
   nextion.update();
-  handleEncoder();
-  handleButton();
-  checkEncoderPublish();
+  if (hmiDisplaySerial.enabled)
+  {
+    handleEncoder();
+    handleButton();
+    checkEncoderPublish();
+  }
+  else
+  {
+    portENTER_CRITICAL(&encoderMux);
+    encoderTicks = 0;
+    buttonPressed = false;
+    portEXIT_CRITICAL(&encoderMux);
+  }
   shotTime = getShotTime(pumpIsOn);
 
   updateDisplay();
@@ -984,9 +1145,44 @@ void stopConfigurationPortal()
 
 void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
 {
+  if (hmiRxQueue == nullptr || incomingData == nullptr || mac_addr == nullptr ||
+      (len != sizeof(struct_message) && len != sizeof(struct_pairing)))
+  {
+    return;
+  }
+  HmiRxPacket packet;
+  memcpy(packet.mac, mac_addr, sizeof(packet.mac));
+  packet.len = static_cast<uint16_t>(len);
+  memcpy(packet.data, incomingData, len);
+  // Wi-Fi callback context (not an ISR). Never block this task on the display.
+  xQueueSend(hmiRxQueue, &packet, 0);
+}
+
+void processReceivedPackets(bool discard)
+{
+  if (hmiRxQueue == nullptr)
+    return;
+  HmiRxPacket packet;
+  // Fixed budget keeps a busy sender from starving the web/update service.
+  for (int i = 0; i < 8 && xQueueReceive(hmiRxQueue, &packet, 0) == pdTRUE; ++i)
+  {
+    if (discard)
+    {
+      if (isPaired && packet.len == sizeof(struct_message) &&
+          memcmp(packet.mac, mainControllerMac, 6) == 0)
+        lastControllerMessageTime = millis();
+      continue;
+    }
+    processReceivedPacket(packet.mac, packet.data, packet.len);
+  }
+}
+
+void processReceivedPacket(const uint8_t *mac_addr, const uint8_t *incomingData, int len)
+{
   if (len == sizeof(struct_pairing))
   {
     memcpy(&pairingData, incomingData, sizeof(pairingData));
+    pairingData.identifier[sizeof(pairingData.identifier) - 1] = '\0';
 
     if (pairingData.id == PAIR_RESPONSE && !isPaired && strcmp(pairingData.identifier, espIdentifier) == 0)
     {
@@ -1555,13 +1751,13 @@ void publishSetting()
   if (pendingSettingIndex < 0)
     return;
 
-  int value = page1_cachedValues[pendingSettingIndex];
   char numBuffer[10];
 
   switch (pendingSettingIndex)
   {
   case 0:
   {
+    int value = page1_cachedValues[pendingSettingIndex];
     float valueF = (float)value / 10.0;
     dtostrf(valueF, 4, 3, numBuffer);
     publishData("tempsetbrew", numBuffer, true);
