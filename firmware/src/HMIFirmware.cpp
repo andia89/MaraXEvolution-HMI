@@ -305,24 +305,17 @@ struct SliderBounds
 };
 // --- Page 0 (Main Brewing Screen) ---
 NextionComponent t_shotTime(nextion, 0, 13);
-NextionComponent t_hxTemp(nextion, 0, 6);
-NextionComponent t_boilerTemp(nextion, 0, 5);
-NextionComponent pic_brew(nextion, 0, 1);
-NextionComponent pic_boiler(nextion, 0, 2);
-NextionComponent pic_arrow(nextion, 0, 3);
 NextionComponent t_weight(nextion, 0, 15);
 NextionComponent t_machineState(nextion, 0, 14);
 int waveformID = 12;
 NextionComponent wf_pressure(nextion, 0, waveformID);
 NextionComponent btn_tare(nextion, 0, 16);
 NextionComponent va_highlight(nextion, 0, 45);
+NextionComponent va_brewTemp(nextion, 0, 46);
+NextionComponent va_boilerTemp(nextion, 0, 47);
+NextionComponent va_setTemp(nextion, 0, 48);
 
 // --- Page 1 (Main Settings) ---
-NextionComponent t_hxTemp2(nextion, 1, 9);
-NextionComponent t_boilerTemp2(nextion, 1, 6);
-NextionComponent pic_brew2(nextion, 1, 1);
-NextionComponent pic_boiler2(nextion, 1, 2);
-NextionComponent pic_arrow2(nextion, 1, 3);
 NextionComponent slider_brewTemp(nextion, 1, 23);
 NextionComponent l_brewTemp(nextion, 1, 20);
 NextionComponent l_brewMode(nextion, 1, 21);
@@ -333,11 +326,6 @@ NextionComponent btn_steamBoost(nextion, 1, 28);
 NextionComponent x_brewTemp(nextion, 1, 24);
 
 // --- Page 2 (Profiling Settings) ---
-NextionComponent t_hxTemp3(nextion, 2, 9);
-NextionComponent t_boilerTemp3(nextion, 2, 6);
-NextionComponent pic_brew3(nextion, 2, 29);
-NextionComponent pic_boiler3(nextion, 2, 30);
-NextionComponent pic_arrow3(nextion, 2, 31);
 NextionComponent btn_ModeManual(nextion, 2, 35);
 NextionComponent btn_ModeFlat(nextion, 2, 36);
 NextionComponent btn_ModeProfile(nextion, 2, 37);
@@ -354,11 +342,6 @@ NextionComponent var_sel(nextion, 2, 43);
 NextionComponent slt_flat(nextion, 2, 42);
 
 // --- Page 3 (System settings) ---
-NextionComponent t_hxTemp4(nextion, 3, 9);
-NextionComponent t_boilerTemp4(nextion, 3, 6);
-NextionComponent pic_brew4(nextion, 3, 1);
-NextionComponent pic_boiler4(nextion, 3, 2);
-NextionComponent pic_arrow4(nextion, 3, 3);
 NextionComponent t_systemMessage(nextion, 3, 20);
 NextionComponent btn_systemSettings(nextion, 3, 21);
 NextionComponent btn_cleaningCycle(nextion, 3, 22);
@@ -1818,51 +1801,35 @@ void updateDisplay()
     }
     lastShotTime_sent = shotTime;
   }
-  const int num_entries = 38;
+  bool tempsChanged = false;
 
-  if ((abs(hxTemp - lastHxTemp_sent) > 0.1) || forceUpdate)
+  if ((abs(hxTemp - lastHxTemp_sent) > 0.1f) || forceUpdate)
   {
-    dtostrf(hxTemp, 4, 1, buffer);
-    int hxPic = (int)round(mapf(hxTemp, 20, 100, 0, num_entries - 1));
-    hxPic = constrain(hxPic, 0, num_entries - 1);
-    t_hxTemp.text(buffer);
-    pic_brew.attribute("pic", (int)hxPic);
-    t_hxTemp2.text(buffer);
-    pic_brew2.attribute("pic", (int)hxPic);
-    t_hxTemp3.text(buffer);
-    pic_brew3.attribute("pic", (int)hxPic);
-    t_hxTemp4.text(buffer);
-    pic_brew4.attribute("pic", (int)hxPic);
+    int hxTenths = (int)round(hxTemp * 10.0f);
+    va_brewTemp.value(hxTenths);
     lastHxTemp_sent = hxTemp;
+    tempsChanged = true;
   }
-  delay(30);
-  if ((abs(boilerTemp - lastBoilerTemp_sent) > 0.1) || forceUpdate)
+  if ((abs(boilerTemp - lastBoilerTemp_sent) > 0.1f) || forceUpdate)
   {
-    dtostrf(boilerTemp, 4, 1, buffer);
-    int blPic = (int)round(mapf(boilerTemp, 20, 140, num_entries, 2 * num_entries - 1));
-    blPic = constrain(blPic, num_entries, 2 * num_entries - 1);
-    t_boilerTemp.text(buffer);
-    pic_boiler.attribute("pic", (int)blPic);
-    t_boilerTemp2.text(buffer);
-    pic_boiler2.attribute("pic", (int)blPic);
-    t_boilerTemp3.text(buffer);
-    pic_boiler3.attribute("pic", (int)blPic);
-    t_boilerTemp4.text(buffer);
-    pic_boiler4.attribute("pic", (int)blPic);
+    int boilerTenths = (int)round(boilerTemp * 10.0f);
+    va_boilerTemp.value(boilerTenths);
     lastBoilerTemp_sent = boilerTemp;
+    tempsChanged = true;
   }
-  delay(30);
-  if ((abs(brewTempSetPoint - lastTempSetpoint_sent) > 0.1) || forceUpdate)
+  if ((abs(brewTempSetPoint - lastTempSetpoint_sent) > 0.1f) || forceUpdate)
   {
+    int setpointTenths = (int)round(brewTempSetPoint);
+    va_setTemp.value(setpointTenths);
     lastTempSetpoint_sent = brewTempSetPoint;
-    int arrPic = (int)round(mapf(brewTempSetPoint / 10, 20 - (100 - 20) / (num_entries - 2), 100 + (100 - 20) / (num_entries - 2), 2 * num_entries, 3 * num_entries));
-    arrPic = constrain(arrPic, 2 * num_entries, 3 * num_entries - 1);
-    pic_arrow.attribute("pic", (int)arrPic);
-    pic_arrow2.attribute("pic", (int)arrPic);
-    pic_arrow3.attribute("pic", (int)arrPic);
-    pic_arrow4.attribute("pic", (int)arrPic);
+    tempsChanged = true;
   }
-  delay(30);
+
+  if (tempsChanged)
+  {
+    nextion.command("click trigger,1");
+  }
+
   if ((abs(weight - lastWeight_sent) > 0.01) || forceUpdate)
   {
     sprintf(buffer, "%.1fg", weight);
