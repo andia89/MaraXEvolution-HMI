@@ -48,7 +48,6 @@ const char *OTA_HOSTNAME = "esp32-arduino-screen";
 const char *OTA_PASSWORD = "1234";
 
 // Nextion TFT updates: Python connects here even when the normal portal is off.
-// Set a separate shared token if desired; the default reuses your OTA password.
 const char *TFT_UPDATE_TOKEN = OTA_PASSWORD;
 const uint16_t TFT_UPDATE_PORT = 8080;
 NextionTftUpdate tftUpdater(Serial1, TFT_UPDATE_TOKEN, TFT_UPDATE_PORT);
@@ -105,7 +104,7 @@ const char *mqtt_topic_active_profile_id = "active_profile_id";
 RotaryEncoder rotaryEncoder(ENCODER_PIN_A, ENCODER_PIN_B, BUTTON_PIN);
 const long ROTARY_MIN_BOUND = 0;
 const long ROTARY_MAX_BOUND = 12;
-
+bool recoveryModeActive = false;
 // --- Nextion Display Communication Port ---
 // This gate lets the rest of the HMI resume after a failed flash without
 // accidentally feeding ordinary UI commands into an unfinished TFT transfer.
@@ -220,6 +219,12 @@ const int SETTING_ID_FLAT_VALUE = 100;
 const int SETTING_ID_PROFILING_VALUE = 101;
 const long PUBLISH_TIMEOUT = 1000;
 
+// Presentation completion is independent of publishing settings.
+bool encoderUiPending = false;
+int encoderUiPage = -1;
+unsigned long encoderUiActivityTime = 0;
+const unsigned long ENCODER_UI_IDLE_MS = 1000;
+
 // --- Shot & Flow Tracking ---
 int shotTime = 0;
 unsigned long shotStartTimeMillis = 0;
@@ -324,6 +329,7 @@ NextionComponent btn_brewModeCoffee(nextion, 1, 26);
 NextionComponent btn_brewModeSteam(nextion, 1, 27);
 NextionComponent btn_steamBoost(nextion, 1, 28);
 NextionComponent x_brewTemp(nextion, 1, 24);
+NextionComponent va_encoderValuePage1(nextion, 1, 31);
 
 // --- Page 2 (Profiling Settings) ---
 NextionComponent btn_ModeManual(nextion, 2, 35);
@@ -340,6 +346,9 @@ NextionComponent var_row(nextion, 2, 23);
 NextionComponent var_col(nextion, 2, 24);
 NextionComponent var_sel(nextion, 2, 43);
 NextionComponent slt_flat(nextion, 2, 42);
+NextionComponent va_stepCountPage2(nextion, 2, 51);
+NextionComponent va_encoderValuePage2(nextion, 2, 52);
+NextionComponent va_encoderSelectionPage2(nextion, 2, 53);
 
 // --- Page 3 (System settings) ---
 NextionComponent t_systemMessage(nextion, 3, 20);
@@ -348,8 +357,8 @@ NextionComponent btn_cleaningCycle(nextion, 3, 22);
 NextionComponent btn_calibrateScale(nextion, 3, 23);
 int referenceWeightID = 24;
 NextionComponent x_referenceWeight(nextion, 3, referenceWeightID);
-int referenceWeightUnitID = 25;
-NextionComponent t_referenceWeightUnit(nextion, 3, referenceWeightUnitID);
+
+NextionComponent va_encoderValuePage3(nextion, 3, 28);
 
 // =================================================================
 // --- NEXTION UI LAYOUT & MAPPINGS ---
@@ -404,6 +413,8 @@ bool parseBool(const char *value);
 void handleIncomingMessage(char *message);
 void publishSetting();
 void checkEncoderPublish();
+void checkEncoderUiIdle();
+void sendPage2EncoderValue(int selection, int valueTenths);
 void sendEspNowBuffer();
 void sendPendingMqttSettings();
 void resetPairing();
@@ -505,6 +516,7 @@ void resumeAfterTftUpdate(bool displayReady)
   portEXIT_CRITICAL(&encoderMux);
   lastEncoderValue = rotaryEncoder.getEncoderValue();
   pendingSettingIndex = -1;
+  encoderUiPending = false;
   isItemSelected = false;
   currentSelectionIndex = 0;
   profileIndexPendingSave = false;
@@ -521,8 +533,8 @@ void resumeAfterTftUpdate(bool displayReady)
   // The updater restored Serial1 to 115200, preserving the original D9/D8 pins.
   if (displayReady)
   {
-    nextion.command("bkcmd=0");
-    nextion.command("sendme");
+    nextion.command("bkcmd=0\xFF\xFF\xFF"
+                    "sendme");
     delay(100);
     nextion.update();
     currentPage = nextion.getCurrentPageID();
@@ -553,8 +565,55 @@ void setup()
   {
     Serial.println("Could not allocate ESP-NOW receive queue.");
   }
+
+  // Configure input pins early to inspect button state
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(ENCODER_PIN_A, INPUT_PULLUP);
+  pinMode(ENCODER_PIN_B, INPUT_PULLUP);
+  delay(50); // Allow line capacitance to settle with pullup
+
+  // Check if knob is depressed at power-on
+  if (digitalRead(BUTTON_PIN) == LOW)
+  {
+    recoveryModeActive = true;
+  }
+
+  currentProfile = &profiles[0];
+
+  // Bring up Wi-Fi and TFT updater first
+  if (!OFFLINE_MODE)
+  {
+    setup_wifi();
+    tftUpdater.begin(canStartTftUpdate);
+    Serial.printf("Nextion update API: http://%s:%u/api/nextion/status\n",
+                  WiFi.localIP().toString().c_str(), TFT_UPDATE_PORT);
+  }
+
+  // --- HARDWARE RECOVERY BRANCH ---
+  if (recoveryModeActive)
+  {
+    Serial.println("\n=======================================================");
+    Serial.println("⚠️  HARDWARE RECOVERY TRIGGERED (Rotary button held at boot)");
+    Serial.println("Nextion UART communication bypassed.");
+    Serial.println("Ready to accept TFT firmware upload via Python updater.");
+    Serial.println("=======================================================\n");
+
+    // Isolate NextionX2 library so it sends no commands to Serial1
+    hmiDisplaySerial.enabled = false;
+
+    // Set Serial1 to standard Nextion upload baud rate (115200)
+    Serial1.begin(115200, SERIAL_8N1, SERIAL_RX, SERIAL_TX);
+
+    // Fulfill canStartTftUpdate() prerequisite
+    setupFinished = true;
+
+    // Exit directly into loop() to service tftUpdater
+    return;
+  }
+
+  // --- NORMAL BOOT SEQUENCE ---
   rotaryEncoder.setEncoderType(EncoderType::FLOATING);
-  rotaryEncoder.setBoundaries(ROTARY_MIN_BOUND, ROTARY_MAX_BOUND, true); // Example: Set target brew temp
+  rotaryEncoder.setBoundaries(ROTARY_MIN_BOUND, ROTARY_MAX_BOUND, true);
   rotaryEncoder.onTurned(&knobCallback);
   rotaryEncoder.onPressed(&buttonCallback);
   rotaryEncoder.begin();
@@ -563,20 +622,10 @@ void setup()
   Serial1.begin(9600, SERIAL_8N1, SERIAL_RX, SERIAL_TX);
   nextion.begin(hmiDisplaySerial, 9600);
   nextion.command("baud=115200");
-  pinMode(ENCODER_PIN_A, INPUT_PULLUP);
-  pinMode(ENCODER_PIN_B, INPUT_PULLUP);
   delay(2500);
 
   Serial1.begin(115200, SERIAL_8N1, SERIAL_RX, SERIAL_TX);
   nextion.begin(hmiDisplaySerial, 115200);
-  currentProfile = &profiles[0];
-  if (!OFFLINE_MODE)
-  {
-    setup_wifi();
-    tftUpdater.begin(canStartTftUpdate);
-    Serial.printf("Nextion update API: http://%s:%u/api/nextion/status\n",
-                  WiFi.localIP().toString().c_str(), TFT_UPDATE_PORT);
-  }
 
   if (!OFFLINE_MODE)
   {
@@ -619,6 +668,7 @@ void setup()
     ArduinoOTA.setPassword(OTA_PASSWORD);
     ArduinoOTA.begin();
   }
+
   va_highlight.value(HIGHLIGHT_COLOR);
   btn_steamBoost.release(steamBoostButtonRelease);
   slider_brewTemp.release(brewTempSliderRelease);
@@ -648,38 +698,44 @@ void setup()
   cacheSliderData();
   cacheEntriesData();
   cleanCurrentPage();
-  delay(2500);
-  nextion.command("vis splash,0");
+  if (OFFLINE_MODE)
+  {
+    nextion.command("vis splash,0");
+  }
   setupFinished = true;
 }
 
 void loop()
 {
-  // Serialize all Nextion access in this task. During flashing, discard live
-  // ESP-NOW telemetry; request a fresh settings snapshot when the upload ends.
-  processReceivedPackets(tftUpdater.busy());
+  // Process received packets and updater handles
+  processReceivedPackets(tftUpdater.busy() || recoveryModeActive);
+
   if (!OFFLINE_MODE)
   {
     tftUpdater.handle();
   }
+
   bool displayReady;
   if (tftUpdater.takeFinished(displayReady))
   {
+    recoveryModeActive = false; // Upload finished; leave recovery state
     resumeAfterTftUpdate(displayReady);
   }
-  if (tftUpdater.busy())
+
+  // In recovery mode or actively uploading, do not run screen/UI/encoder tasks
+  if (recoveryModeActive || tftUpdater.busy())
   {
+    encoderUiPending = false;
     hmiDisplaySerial.enabled = false;
-    // Do not run NextionX2, the normal portal, serial console commands, or
-    // ArduinoOTA concurrently with the TFT transfer. Wi-Fi tasks still run.
     portENTER_CRITICAL(&encoderMux);
     encoderTicks = 0;
     buttonPressed = false;
     portEXIT_CRITICAL(&encoderMux);
-    // Drop console input rather than execute stale commands after a flash.
+
     for (int i = 0; i < 256 && Serial.available(); ++i)
       Serial.read();
-    delay(1);
+
+    delay(2);
     return;
   }
   if (Serial.available())
@@ -793,11 +849,9 @@ void loop()
     }
     systemMessageClearTime = millis() + 5000;
 
-    char cmdBuffer[10];
-    sprintf(cmdBuffer, "vis %d,0", referenceWeightID);
-    nextion.command(cmdBuffer);
-    sprintf(cmdBuffer, "vis %d,0", referenceWeightUnitID);
-    nextion.command(cmdBuffer);
+    nextion.command(
+        "vis refWeight,0\xFF\xFF\xFF"
+        "vis refWeightUnit,0");
   }
 
   if (cleaningRequestTime > 0 && (millis() - cleaningRequestTime > CLEANING_REQUEST_TIMEOUT_MS))
@@ -821,6 +875,7 @@ void loop()
   int newCurrentPage = nextion.getCurrentPageID();
   if (newCurrentPage != currentPage)
   {
+    encoderUiPending = false;
     currentPage = newCurrentPage;
     cleanCurrentPage();
     lastHxTemp_sent = -1.0f;
@@ -841,6 +896,7 @@ void loop()
     {
       Serial.println("Not paired. Retrying auto-pairing request...");
 
+      myChannel = WiFi.channel();
       pairingData.id = PAIR_REQUEST;
       pairingData.channel = myChannel;
       strcpy(pairingData.identifier, espIdentifier);
@@ -866,9 +922,11 @@ void loop()
     handleEncoder();
     handleButton();
     checkEncoderPublish();
+    checkEncoderUiIdle();
   }
   else
   {
+    encoderUiPending = false;
     portENTER_CRITICAL(&encoderMux);
     encoderTicks = 0;
     buttonPressed = false;
@@ -881,6 +939,7 @@ void loop()
   newCurrentPage = nextion.getCurrentPageID();
   if (newCurrentPage != currentPage)
   {
+    encoderUiPending = false;
     currentPage = newCurrentPage;
   }
 }
@@ -1191,11 +1250,10 @@ void processReceivedPacket(const uint8_t *mac_addr, const uint8_t *incomingData,
 
       Serial.println("Successfully paired with main controller!");
       isPaired = true;
-
+      lastControllerMessageTime = millis();
+      nextion.command("vis splash,0");
       sendPendingMqttSettings();
-
       Serial.println("Requesting current settings...");
-
       lastSettingsRequestTime = millis();
     }
   }
@@ -1242,6 +1300,10 @@ void resetPairing()
   isPaired = false;
   lastControllerMessageTime = 0;
 
+  brewModeReceived = steamBoostReceived = flatValueReceived = false;
+  profilingSourceReceived = profilingTargetReceived = profilingModeReceived = false;
+  currentProfileReceived = tempsetReceived = false;
+
   esp_now_del_peer(mainControllerMac);
   memset(mainControllerMac, 0, 6);
 
@@ -1249,6 +1311,7 @@ void resetPairing()
   memcpy(peerInfo.peer_addr, broadcastAddress, 6);
   peerInfo.channel = 0;
   peerInfo.encrypt = false;
+  peerInfo.ifidx = WIFI_IF_STA;
 
   esp_err_t addStatus = esp_now_add_peer(&peerInfo);
   if (addStatus != ESP_OK && addStatus != ESP_ERR_ESPNOW_EXIST)
@@ -1558,12 +1621,9 @@ void handleIncomingMessage(char *message)
       calibrationRequestTime = 0;
       t_systemMessage.text("Tare Complete.\r\nPlace weight on scale.\r\nPress button to weigh");
 
-      char cmdBuffer[20];
-      sprintf(cmdBuffer, "vis %d,1", referenceWeightID);
-      nextion.command(cmdBuffer);
-      sprintf(cmdBuffer, "vis %d,1", referenceWeightUnitID);
-      nextion.command(cmdBuffer);
-      nextion.command(cmdBuffer);
+      nextion.command(
+          "vis refWeight,1\xFF\xFF\xFF"
+          "vis refWeightUnit,1");
       delay(100);
       if (referenceWeight <= 0.1f)
       {
@@ -1591,11 +1651,9 @@ void handleIncomingMessage(char *message)
         }
 
         calibrationStep = 0;
-        char cmdBuffer[20];
-        sprintf(cmdBuffer, "vis %d,0", referenceWeightID);
-        nextion.command(cmdBuffer);
-        sprintf(cmdBuffer, "vis %d,0", referenceWeightUnitID);
-        nextion.command(cmdBuffer);
+        nextion.command(
+            "vis refWeight,0\xFF\xFF\xFF"
+            "vis refWeightUnit,0");
         systemMessageClearTime = millis() + 5000;
       }
     }
@@ -1769,6 +1827,42 @@ void checkEncoderPublish()
   if (pendingSettingIndex != -1 && (millis() - lastEncoderActivityTime > PUBLISH_TIMEOUT))
   {
     publishSetting();
+  }
+}
+
+void sendPage2EncoderValue(int selection, int valueTenths)
+{
+  // -1 selects the flat value; 0..255 identify profile cells (row * 2 + column).
+  va_encoderSelectionPage2.value(selection);
+  va_encoderValuePage2.value(valueTenths);
+  nextion.command("click encUI,1");
+  encoderUiActivityTime = millis();
+  lastEncoderActivityTime = encoderUiActivityTime;
+  encoderUiPage = 2;
+  encoderUiPending = true;
+}
+
+void checkEncoderUiIdle()
+{
+  if (!encoderUiPending)
+    return;
+
+  // Never deliver an old edit-completion event to another page or workflow.
+  const bool pageSupportsEncoderUi =
+      currentPage == 1 ||
+      (currentPage == 2 && strcmp(profilingMode, "manual") != 0) ||
+      (currentPage == 3 && calibrationStep == 2);
+  if (!hmiDisplaySerial.enabled || currentPage != encoderUiPage ||
+      !pageSupportsEncoderUi)
+  {
+    encoderUiPending = false;
+    return;
+  }
+
+  if (millis() - encoderUiActivityTime >= ENCODER_UI_IDLE_MS)
+  {
+    encoderUiPending = false;
+    nextion.command("click encUI,0");
   }
 }
 
@@ -2068,11 +2162,9 @@ void cleanCurrentPage()
     x_referenceWeight.value(1000);
     if (calibrationStep != 2)
     {
-      char cmdBuffer[10];
-      sprintf(cmdBuffer, "vis %d,0", referenceWeightID);
-      nextion.command(cmdBuffer);
-      sprintf(cmdBuffer, "vis %d,0", referenceWeightUnitID);
-      nextion.command(cmdBuffer);
+      nextion.command(
+          "vis refWeight,0\xFF\xFF\xFF"
+          "vis refWeightUnit,0");
     }
   default:
     break;
@@ -2293,62 +2385,76 @@ void knobCallback(long value)
 
 void handleEncoder()
 {
-  if (currentPage == 2 && selectedItemPage2 > 1024)
-    return;
   long ticksToProcess = 0;
-  if (encoderTicks != 0)
-  {
-    portENTER_CRITICAL(&encoderMux);
-    ticksToProcess = encoderTicks;
-    encoderTicks = 0;
-    portEXIT_CRITICAL(&encoderMux);
-  }
+
+  portENTER_CRITICAL(&encoderMux);
+  ticksToProcess = encoderTicks;
+  encoderTicks = 0;
+  portEXIT_CRITICAL(&encoderMux);
 
   if (ticksToProcess == 0)
   {
     return;
   }
+
+  if (currentPage == 2 && selectedItemPage2 > 1024)
+  {
+    return;
+  }
+
   int selectedIndex = currentSelectionIndex - 1;
 
   switch (currentPage)
   {
   case 1:
   {
-    int selectedIndexPage1 = 0;
-    NextionComponent *componentFloat = page1_components[selectedIndexPage1][3];
-    NextionComponent *component1 = page1_components[selectedIndexPage1][1];
-    NextionComponent *component2 = page1_components[selectedIndexPage1][2];
+    const int currentValue = page1_cachedValues[0];
 
-    int currentValue = page1_cachedValues[selectedIndexPage1];
-    int minVal = page1_bounds[selectedIndexPage1].min;
-    int maxVal = page1_bounds[selectedIndexPage1].max;
+    const long requestedValue =
+        static_cast<long>(currentValue) + ticksToProcess;
 
-    int step = 1;
-    int totalChange = ticksToProcess * step;
-    int newValue = constrain(currentValue + totalChange, minVal, maxVal);
+    const int newValue = static_cast<int>(
+        constrain(
+            requestedValue,
+            static_cast<long>(page1_bounds[0].min),
+            static_cast<long>(page1_bounds[0].max)));
+
     if (newValue != currentValue)
     {
-      component1->value(newValue);
-      page1_cachedValues[selectedIndexPage1] = newValue;
-      componentFloat->value(newValue);
-      pendingSettingIndex = selectedIndexPage1;
-      lastEncoderActivityTime = millis();
+      page1_cachedValues[0] = newValue;
+      pendingSettingIndex = 0;
     }
 
+    // Nextion updates both the slider and the numeric readout.
+    va_encoderValuePage1.value(newValue);
+    nextion.command("click encUI,1");
+
+    // Keep waiting while the knob turns, including at a value limit.
+    encoderUiActivityTime = millis();
+    lastEncoderActivityTime = encoderUiActivityTime;
+    encoderUiPage = 1;
+    encoderUiPending = true;
     break;
   }
   case 2:
   {
     if ((strcmp(profilingMode, "flat") == 0) && selectedItemPage2 == 0)
     {
-      flatValue = flatValue + (ticksToProcess * 0.1f);
-      if (flatValue < 0)
-        flatValue = 0;
-      char newValStr[16];
-      dtostrf(flatValue, 4, 1, newValStr);
-      slt_flat.text(newValStr);
-      pendingSettingIndex = SETTING_ID_FLAT_VALUE;
-      lastEncoderActivityTime = millis();
+      // Work in tenths and stay within Nextion's signed 32-bit numeric range.
+      double requested = round(static_cast<double>(flatValue) * 10.0) +
+                         static_cast<double>(ticksToProcess);
+      if (!isfinite(requested) || requested < 0.0)
+        requested = 0.0;
+      if (requested > 2147483647.0)
+        requested = 2147483647.0;
+      const int valueTenths = static_cast<int>(requested);
+      const float newValue = static_cast<float>(valueTenths / 10.0);
+      if (newValue != flatValue)
+      {
+        flatValue = newValue;
+        pendingSettingIndex = SETTING_ID_FLAT_VALUE;
+      }
+      sendPage2EncoderValue(-1, valueTenths);
     }
     else if (strcmp(profilingMode, "profile") == 0)
     {
@@ -2389,42 +2495,47 @@ void handleEncoder()
         lastEncoderActivityTime = millis();
         pendingSettingIndex = SETTING_ID_PROFILING_VALUE;
       }
-      else if (rowPage2 < currentProfile->numSteps && selectedItemPage2 < 1024)
+      else if (currentProfile != nullptr &&
+               rowPage2 < currentProfile->numSteps && columnPage2 < 2 &&
+               selectedItemPage2 < 1024)
       {
-        float change = ticksToProcess * 0.1f;
-
-        if (columnPage2 == 0)
+        float &cell = columnPage2 == 0
+                          ? currentProfile->steps[rowPage2].target
+                          : currentProfile->steps[rowPage2].control;
+        const float newValue = constrain(
+            cell + ticksToProcess * 0.1f, 0.0f, 999.9f);
+        if (newValue != cell)
         {
-          currentProfile->steps[rowPage2].target += change;
+          cell = newValue;
+          currentProfileDirty = true;
+          pendingSettingIndex = SETTING_ID_PROFILING_VALUE;
         }
-        else if (columnPage2 == 1)
-        {
-          currentProfile->steps[rowPage2].control += change;
-        }
-        currentProfileDirty = true;
-        updateProfilingDisplay();
-        lastEncoderActivityTime = millis();
-        pendingSettingIndex = SETTING_ID_PROFILING_VALUE;
+        // Clamping stays in the data model; no profile text is built here.
+        sendPage2EncoderValue(rowPage2 * 2 + columnPage2,
+                              static_cast<int>(roundf(cell * 10.0f)));
       }
     }
     break;
   }
   case 3:
   {
-    x_referenceWeight.attribute("bco", HIGHLIGHT_COLOR);
-    float currentFloatValue = referenceWeight;
-    float step = 0.5f;
-    float totalChange = (float)ticksToProcess * step;
-    float newFloatValue = currentFloatValue + totalChange;
-    newFloatValue = constrain(newFloatValue, 0.0f, 500.0f);
+    if (calibrationStep != 2)
+      break;
 
-    if (newFloatValue != currentFloatValue)
-    {
-      referenceWeight = newFloatValue;
-      x_referenceWeight.value((int)(newFloatValue * 10.0f));
+    referenceWeight = constrain(
+        referenceWeight + ticksToProcess * 0.5f,
+        0.0f,
+        500.0f);
 
-      lastEncoderActivityTime = millis();
-    }
+    // Send data; the display owns rendering and editing appearance.
+    va_encoderValuePage3.value(static_cast<int>(roundf(referenceWeight * 10.0f)));
+    nextion.command("click encUI,1");
+
+    // Rotation at a value limit still counts as encoder activity.
+    encoderUiActivityTime = millis();
+    lastEncoderActivityTime = encoderUiActivityTime;
+    encoderUiPage = 3;
+    encoderUiPending = true;
     break;
   }
   }
@@ -2668,88 +2779,81 @@ void handleButton()
   }
   switch (currentPage)
   {
-  // case 1:
-  //   currentSelectionIndex = 0;
-  //   if (currentSelectionIndex >= NUM_PAGE1_COMPONENTS) {
-  //     currentSelectionIndex = 0;
-  //   }
+    // case 1:
+    //   currentSelectionIndex = 0;
+    //   if (currentSelectionIndex >= NUM_PAGE1_COMPONENTS) {
+    //     currentSelectionIndex = 0;
+    //   }
 
-  //   for (int i = 0; i < NUM_PAGE1_COMPONENTS; i++) {
-  //     if (i == currentSelectionIndex) {
-  //       page1_components[i][0]->attribute("font", 2);
-  //     } else {
-  //       page1_components[i][0]->attribute("font", 6);
-  //     }
-  //   }
-  //   lastPageForSelection = currentPage;
-  //   currentSelectionIndex++;
-  //   isItemSelected = true;
-  //   break;
+    //   for (int i = 0; i < NUM_PAGE1_COMPONENTS; i++) {
+    //     if (i == currentSelectionIndex) {
+    //       page1_components[i][0]->attribute("font", 2);
+    //     } else {
+    //       page1_components[i][0]->attribute("font", 6);
+    //     }
+    //   }
+    //   lastPageForSelection = currentPage;
+    //   currentSelectionIndex++;
+    //   isItemSelected = true;
+    //   break;
   case 2:
   {
     if (strcmp(profilingMode, "manual") == 0)
     {
       break;
     }
-    else if (strcmp(profilingMode, "flat") == 0)
+
+    const int steps =
+        currentProfile != nullptr ? currentProfile->numSteps : 0;
+
+    va_stepCountPage2.value(steps);
+
+    nextion.command("click trigger,0");
+
+    int selection = -1;
+
+    for (uint8_t attempt = 0; attempt < 3; ++attempt)
     {
-      var_row.value(0);
-      var_col.value(0);
-      var_sel.value(0);
-      selectedItemPage2 = 0;
+      delay(50);
+      selection = var_sel.value();
+
+      const bool validCell =
+          selection >= 0 && selection < steps * 2;
+
+      const bool validFlat =
+          strcmp(profilingMode, "flat") == 0 && selection == 0;
+
+      if (selection == 1024 || validCell || validFlat)
+      {
+        break;
+      }
+    }
+
+    if (selection < 0 ||
+        (selection != 1024 &&
+         !(strcmp(profilingMode, "flat") == 0 && selection == 0) &&
+         selection >= steps * 2))
+    {
+      selectedItemPage2 = 1025;
       rowPage2 = 0;
-      columnPage2 = 0;
-      slt_flat.attribute("bco", HIGHLIGHT_COLOR);
+      columnPage2 = 2;
+      Serial.println("Could not read a valid Nextion selection.");
       break;
     }
-    else if (strcmp(profilingMode, "profile") == 0)
+
+    selectedItemPage2 = static_cast<uint16_t>(selection);
+
+    if (selection == 1024)
     {
-      const int val_y = slt_Values.attributeValue("val_y");
-      delay(50);
-      int maxIndex = (currentProfile->numSteps * 2 - 1);
-      if (selectedItemPage2 >= 1024)
-      {
-        var_col.value(0);
-        var_sel.value(0);
-        var_row.value(0);
-        selectedItemPage2 = 0;
-        columnPage2 = 0;
-        rowPage2 = 0;
-        slt_Values.attribute("val_y", 0);
-        t_profile.attribute("bco", 65536);
-        break;
-      }
-      if (selectedItemPage2 >= maxIndex)
-      {
-        selectedItemPage2 = 1024;
-        columnPage2 = 2;
-        rowPage2 = 0;
-        var_col.value(columnPage2);
-        var_row.value(rowPage2);
-        var_sel.value(selectedItemPage2);
-        t_profile.attribute("bco", HIGHLIGHT_COLOR);
-        break;
-      }
-      t_profile.attribute("bco", 65536);
-      selectedItemPage2++;
-      var_sel.value(selectedItemPage2);
-      if (columnPage2 == 0)
-      {
-        columnPage2 = 1;
-        var_col.value(columnPage2);
-      }
-      else if (columnPage2 == 1)
-      {
-        rowPage2++;
-        columnPage2 = 0;
-        var_col.value(columnPage2);
-        var_row.value(rowPage2);
-      }
-      if ((1 + rowPage2) * 20 - val_y >= sltHeight)
-      {
-        slt_Values.attribute("val_y", (1 + rowPage2) * 12);
-      }
+      rowPage2 = 0;
+      columnPage2 = 2;
     }
+    else
+    {
+      rowPage2 = static_cast<uint8_t>(selection / 2);
+      columnPage2 = static_cast<uint8_t>(selection % 2);
+    }
+
     break;
   }
   case 3:
@@ -2757,7 +2861,7 @@ void handleButton()
     if (calibrationStep == 2)
     {
       isItemSelected = true;
-      x_referenceWeight.attribute("bco", HIGHLIGHT_COLOR);
+      nextion.command("click trigger,0");
       int screenVal = x_referenceWeight.value();
       if (screenVal != -1)
       {
@@ -2873,14 +2977,8 @@ void profilingModeFlatButtonRelease()
 void profilingModeProfilingButtonRelease()
 {
   delay(100);
-  const char *pValueString = slt_Values.text();
-  delay(100);
-  if (strcmp(pValueString, "Error") != 0)
-  {
-    strncpy(valueString, pValueString, sizeof(valueString) - 1);
-    valueString[sizeof(valueString) - 1] = '\0';
-    parseProfilingData();
-  }
+  // The displayed list is a view of currentProfile, not profile storage.
+  // In particular, do not replace the profile with a serial text readback.
   char payloadBuffer[32];
   cleanCurrentPage();
   strlcpy(profilingMode, "profile", sizeof(profilingMode));
@@ -2986,33 +3084,24 @@ void cleaningCycleButtonRelease()
 
 void profilingTextRelease()
 {
-  delay(100);
-  const int row_val = var_row.value();
-  delay(100);
-  const int col_val = var_col.value();
-  delay(100);
-  const int sel_val = var_sel.value();
-  delay(100);
-  const char *xValString = slt_Values.attributeText("txt");
-  bool rerun = false;
-  if (row_val == -1)
-    rerun = true;
-  if (col_val == -1)
-    rerun = true;
-  if (sel_val == -1)
-    rerun = true;
-  if (strcmp(xValString, "Error") == 0)
-    rerun = true;
-  if (rerun)
-  {
-    profilingTextRelease();
+  // Touch changes selection only. Profile values already live on the ESP32.
+  if (currentProfile == nullptr)
     return;
+  for (uint8_t attempt = 0; attempt < 3; ++attempt)
+  {
+    delay(50);
+    const int selection = var_sel.value();
+    if (selection >= 0 && selection < currentProfile->numSteps * 2)
+    {
+      selectedItemPage2 = static_cast<uint16_t>(selection);
+      rowPage2 = static_cast<uint8_t>(selection / 2);
+      columnPage2 = static_cast<uint8_t>(selection % 2);
+      return;
+    }
   }
-  strncpy(valueString, xValString, sizeof(valueString) - 1);
-  parseProfilingData();
-  selectedItemPage2 = sel_val;
-  rowPage2 = row_val;
-  columnPage2 = col_val;
+  selectedItemPage2 = 1025;
+  rowPage2 = 0;
+  columnPage2 = 2;
 }
 
 void profilingFlatRelease()
@@ -3096,10 +3185,9 @@ void calibrateScaleButtonRelease()
     t_systemMessage.text("Calibration requested...");
     calibrationRequestTime = millis();
 
-    sprintf(cmdBuffer, "vis %d,0", referenceWeightID);
-    nextion.command(cmdBuffer);
-    sprintf(cmdBuffer, "vis %d,0", referenceWeightUnitID);
-    nextion.command(cmdBuffer);
+    nextion.command(
+        "vis refWeight,0\xFF\xFF\xFF"
+        "vis refWeightUnit,0");
   }
   else if (calibrationStep == 1)
   {
@@ -3121,10 +3209,9 @@ void calibrateScaleButtonRelease()
     char weightBuffer[10];
     snprintf(weightBuffer, sizeof(weightBuffer), "%.1f", realWeight);
 
-    sprintf(cmdBuffer, "vis %d,0", referenceWeightID);
-    nextion.command(cmdBuffer);
-    sprintf(cmdBuffer, "vis %d,0", referenceWeightUnitID);
-    nextion.command(cmdBuffer);
+    nextion.command(
+        "vis refWeight,0\xFF\xFF\xFF"
+        "vis refWeightUnit,0");
 
     Serial.printf("Sending calibration_step=%s (for weight)\n", weightBuffer);
     publishData("calibration_step", weightBuffer, true);
